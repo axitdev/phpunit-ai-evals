@@ -1,0 +1,109 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    name: PHP ${{ matrix.php }} / PHPUnit ${{ matrix.phpunit }}${{ matrix.lowest && ' / lowest deps' || '' }}${{ matrix.os == 'windows-latest' && ' / Windows' || '' }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        php: ['8.4', '8.5']
+        phpunit: ['12.5', '13.0']
+        lowest: [false]
+        include:
+          - os: ubuntu-latest
+            php: '8.4'
+            phpunit: '12.5'
+            lowest: true
+          # Paths, locks and rename() behave differently on Windows.
+          - os: windows-latest
+            php: '8.5'
+            phpunit: '13.0'
+            lowest: false
+
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      - uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # v2
+        with:
+          php-version: ${{ matrix.php }}
+          coverage: none
+
+      - name: Pin PHPUnit
+        run: composer require "phpunit/phpunit:^${{ matrix.phpunit }}" --no-update --no-interaction
+
+      - name: Install dependencies
+        run: composer update --prefer-dist --no-progress --no-interaction ${{ matrix.lowest && '--prefer-lowest --prefer-stable' || '' }}
+
+      - name: PHPStan
+        if: ${{ !matrix.lowest }}
+        run: composer phpstan
+
+      - name: PHPUnit
+        run: composer test
+
+  code-style:
+    name: Code style
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      - uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # v2
+        with:
+          php-version: '8.4'
+          coverage: none
+
+      - name: Validate composer.json
+        run: composer validate --strict
+
+      - name: Install dependencies
+        run: composer update --prefer-dist --no-progress --no-interaction
+
+      - name: Audit dependencies
+        run: composer audit
+
+      - name: PHP CS Fixer
+        run: composer cs
+
+  quality:
+    name: Coverage and mutation testing
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      - uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # v2
+        with:
+          php-version: '8.4'
+          coverage: pcov
+
+      - name: Install dependencies
+        run: composer update --prefer-dist --no-progress --no-interaction
+
+      - name: Coverage
+        run: |
+          mkdir -p build
+          vendor/bin/phpunit --coverage-text=build/coverage.txt
+          grep -A3 'Summary:' build/coverage.txt
+
+      # Pull requests only, and it never fails the build: escaped mutants show up as annotations to read, and the full
+      # list is in the uploaded artifact. Most of what escapes is equivalent (e.g. JSON depth 511 vs 512).
+      - name: Mutation testing
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
+        run: vendor/bin/infection --threads=max --no-progress --show-mutations=20
+
+      - name: Upload coverage and mutation reports
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: quality-reports
+          path: build/

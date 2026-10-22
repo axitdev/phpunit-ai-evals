@@ -1,0 +1,19 @@
+{
+    "$schema": "vendor/infection/infection/resources/schema.json",
+    "source": {
+        "directories": ["src"]
+    },
+    "logs": {
+        "text": "build/infection.log",
+        "summary": "build/infection-summary.log",
+        "github": true
+    },
+    "mutators": {
+        "@default": true,
+        // Narrowing public assertions to protected or private only proves no test calls them from outside; noise here.
+        "PublicVisibility": false,
+        "ProtectedVisibility": false
+    },
+    // tests/Live calls real APIs and is not a test suite in phpunit.xml.dist, so it never runs here.
+    "testFrameworkOptions": "--testsuite=Unit,Integration"
+}
