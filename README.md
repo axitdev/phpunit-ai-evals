@@ -5,7 +5,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 > [!WARNING]
-> **Pre-release and experimental (v0.0.2).** The public API, cassette format, and request-matching logic are subject to change. Feedback is welcome via [Issues](https://github.com/axitdev/phpunit-ai-evals/issues) and Pull Requests.
+> **Pre-release and experimental.** The public API, cassette format, and request-matching logic are subject to change. Feedback is welcome via [Issues](https://github.com/axitdev/phpunit-ai-evals/issues) and Pull Requests.
 
 Deterministic evaluations, semantic assertions, and regression testing for LLM pipelines in PHPUnit—without flaky tests or recurring API costs.
 
@@ -13,7 +13,7 @@ The first time a test runs, LLM calls hit the real provider API and are recorded
 
 Works out of the box with any **PSR-18 HTTP client** (Guzzle, Symfony HttpClient, `openai-php/client`, Anthropic SDK, Laravel `Http`, Prism). Compatible with OpenAI, Anthropic, Gemini, Ollama, and AWS Bedrock (streaming included).
 
-**Requirements:** PHP 8.4+ (with `ext-mbstring`) and PHPUnit 12.5 or 13.
+**Requirements:** PHP 8.4+ and PHPUnit 12.5 or 13.
 
 ---
 
