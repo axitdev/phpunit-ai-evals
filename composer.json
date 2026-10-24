@@ -1,6 +1,6 @@
 {
     "name": "axitdev/phpunit-ai-evals",
-    "description": "Framework-agnostic AI Evals, LLM-as-a-Judge & Smart VCR for PHPUnit",
+    "description": "PHPUnit extension for automated LLM evaluations and benchmarks, featuring semantic assertions, similarity scoring, and LLM-as-a-judge patterns.",
     "type": "library",
     "license": "MIT",
     "keywords": ["phpunit", "llm", "ai", "evals", "llm-as-a-judge", "vcr", "testing", "openai", "anthropic", "gemini", "ollama"],
