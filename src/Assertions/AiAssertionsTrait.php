@@ -387,8 +387,9 @@ trait AiAssertionsTrait
             throw new InvalidArgumentException('runConversation() needs at least one Turn.');
         }
         $conversation = new Conversation($name);
-        foreach (array_values($turns) as $i => $turn) {
-            $index = $i + 1;
+        $index = 0;
+        foreach ($turns as $turn) {
+            $index++;
             $conversation->begin($turn->message);
             $before = count(AiTraceCollector::current()->all());
             $this->aiActiveTurn = [$name, $index];
