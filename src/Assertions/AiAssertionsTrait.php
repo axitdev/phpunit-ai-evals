@@ -549,17 +549,19 @@ trait AiAssertionsTrait
      */
     private function aiExpectsCassetteMiss(): bool
     {
-        $read = static function (object $object, string $class, string $property): mixed {
+        $expected = null;
+        try {
+            // PHPUnit up to 12: a private property of TestCase itself.
+            $expected = (new \ReflectionProperty(\PHPUnit\Framework\TestCase::class, 'expectedException'))->getValue($this);
+        } catch (\ReflectionException) {
             try {
-                return (new \ReflectionProperty($class, $property))->getValue($object);
+                // PHPUnit 13: on the TestCase\ExceptionExpectation it delegates to.
+                $expectation = (new \ReflectionProperty(\PHPUnit\Framework\TestCase::class, 'exceptionExpectation'))->getValue($this);
+                if (is_object($expectation)) {
+                    $expected = (new \ReflectionProperty($expectation, 'expectedException'))->getValue($expectation);
+                }
             } catch (\ReflectionException) {
-                return null;
             }
-        };
-        $expected = $read($this, \PHPUnit\Framework\TestCase::class, 'expectedException');
-        if ($expected === null) {
-            $expectation = $read($this, \PHPUnit\Framework\TestCase::class, 'exceptionExpectation');
-            $expected = is_object($expectation) ? $read($expectation, $expectation::class, 'expectedException') : null;
         }
 
         return is_string($expected) && is_a(CassetteMissException::class, $expected, true);
