@@ -16,12 +16,16 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest]
-        php: ['8.4', '8.5']
+        php: ['8.3', '8.4', '8.5']
         phpunit: ['12.5', '13.0']
         lowest: [false]
+        exclude:
+          # PHPUnit 13 needs PHP 8.4.
+          - php: '8.3'
+            phpunit: '13.0'
         include:
           - os: ubuntu-latest
-            php: '8.4'
+            php: '8.3'
             phpunit: '12.5'
             lowest: true
           # Paths, locks and rename() behave differently on Windows.
@@ -48,7 +52,11 @@ jobs:
         if: ${{ !matrix.lowest }}
         run: composer phpstan
 
-      - name: PHPUnit
+      # Replay-only, as on any CI: a request missing from a cassette fails instead of reaching a provider, and no job
+      # needs API keys. (Auto mode already turns into replay on CI; this keeps it so if that detection ever changes.)
+      - name: PHPUnit (replay-only)
+        env:
+          AI_EVAL_MODE: replay
         run: composer test
 
   code-style:

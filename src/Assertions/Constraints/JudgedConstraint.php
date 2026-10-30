@@ -34,6 +34,17 @@ abstract class JudgedConstraint extends Constraint
         return $passed;
     }
 
+    /** The verdict of the last evaluation, once evaluate() has run. */
+    public function verdict(): ?JudgeVerdict
+    {
+        return $this->verdict;
+    }
+
+    public function threshold(): float
+    {
+        return $this->threshold;
+    }
+
     protected function failureDescription(mixed $other): string
     {
         return 'the output ' . $this->toString();

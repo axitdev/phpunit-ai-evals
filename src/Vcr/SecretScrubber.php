@@ -31,8 +31,27 @@ final class SecretScrubber
     /** Headers add `key` (e.g. `ocp-apim-subscription-key`) and `cookie`, and leave out CORS `*-credentials`. */
     private const SECRET_HEADER = '/(?:^|[-_])(?:' . self::SECRET_WORDS . '|key|cookie)$/i';
 
+    /**
+     * Credentials recognised by their shape wherever they appear: in prompts, bodies, URLs, header values and traces.
+     * Each match is replaced whole, except `Bearer ` and `Basic ` keep their scheme.
+     */
+    private const TOKEN_PATTERNS = [
+        '/\b(Bearer|Basic)\s+[A-Za-z0-9._~+\/-]{8,}=*/',
+        '/\bsk-(?:ant-|proj-|svcacct-|or-v1-)?[A-Za-z0-9_-]{20,}/',             // OpenAI, Anthropic, OpenRouter
+        '/\b[rsp]k_(?:live|test)_[A-Za-z0-9]{16,}/',                           // Stripe
+        '/\bAIza[0-9A-Za-z_-]{35}/',                                           // Google API keys
+        '/\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/',                                     // AWS access key ids
+        '/\b(?:gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{22,})/',     // GitHub
+        '/\bxox[abposr]-[A-Za-z0-9-]{10,}/',                                   // Slack
+        '/\b(?:hf|gsk|xai|pplx)[_-][A-Za-z0-9]{30,}/',                         // Hugging Face, Groq, xAI, Perplexity
+        '/\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/', // JWTs
+    ];
+
     /** @var list<string> */
     private readonly array $headers;
+
+    /** @var list<string> */
+    private readonly array $patterns;
 
     /** @var list<string> */
     private readonly array $keys;
@@ -43,9 +62,16 @@ final class SecretScrubber
     /**
      * @param list<string> $extraHeaders Header names redacted on top of the built-in list (case-insensitive)
      * @param list<string> $extraKeys Query, form and JSON key names redacted on top of the built-in list (case-insensitive)
+     * @param list<string> $extraPatterns PCRE patterns for credential values, redacted wherever they appear
      */
-    public function __construct(array $extraHeaders = [], array $extraKeys = [])
+    public function __construct(array $extraHeaders = [], array $extraKeys = [], array $extraPatterns = [])
     {
+        foreach ($extraPatterns as $pattern) {
+            if (@preg_match($pattern, '') === false) {
+                throw new \InvalidArgumentException(sprintf('Invalid redaction pattern: %s', $pattern));
+            }
+        }
+        $this->patterns = [...self::TOKEN_PATTERNS, ...$extraPatterns];
         $this->headers = [...self::HEADERS, ...array_map(strtolower(...), $extraHeaders)];
         $this->keys = [...self::KEYS, ...array_map(strtolower(...), $extraKeys)];
         $this->queryKeys = ['key', ...$this->keys];
@@ -62,7 +88,7 @@ final class SecretScrubber
             $name = (string) $name;
             $out[$name] = in_array(strtolower($name), $this->headers, true) || preg_match(self::SECRET_HEADER, $name) === 1
                 ? [self::REDACTED]
-                : array_map(strval(...), array_values((array) $values));
+                : array_map(fn(mixed $v): string => $this->scrubText(strval($v)), array_values((array) $values));
         }
 
         return $out;
@@ -113,6 +139,55 @@ final class SecretScrubber
         }
 
         return $data;
+    }
+
+    /**
+     * Redacts credential-shaped values (API keys, bearer tokens, JWTs) in every string of $value, recursively.
+     *
+     * @template T of mixed
+     * @param T $value
+     * @return (T is string ? string : (T is array ? array<mixed> : T))
+     */
+    public function scrubValues(mixed $value): mixed
+    {
+        if (is_string($value)) {
+            return $this->scrubText($value);
+        }
+        if (is_array($value)) {
+            foreach ($value as $k => $v) {
+                $value[$k] = $this->scrubValues($v);
+            }
+        }
+
+        return $value;
+    }
+
+    /**
+     * scrubValues() for a string-keyed map, keeping its type.
+     *
+     * @param array<string, mixed> $map
+     * @return array<string, mixed>
+     */
+    public function scrubMap(array $map): array
+    {
+        foreach ($map as $k => $v) {
+            $map[$k] = $this->scrubValues($v);
+        }
+
+        return $map;
+    }
+
+    public function scrubText(string $text): string
+    {
+        foreach ($this->patterns as $pattern) {
+            $text = (string) preg_replace_callback(
+                $pattern,
+                static fn(array $m): string => in_array($m[1] ?? '', ['Bearer', 'Basic'], true) ? $m[1] . ' ' . self::REDACTED : self::REDACTED,
+                $text,
+            );
+        }
+
+        return $text;
     }
 
     /**

@@ -6,6 +6,7 @@ namespace Axitdev\PhpUnitAiEvals\PhpUnit;
 
 use Axitdev\PhpUnitAiEvals\Trace\AiInteraction;
 use Axitdev\PhpUnitAiEvals\Trace\AiTraceCollector;
+use Axitdev\PhpUnitAiEvals\Vcr\MatchingRules;
 use Axitdev\PhpUnitAiEvals\Vcr\SecretScrubber;
 use Axitdev\PhpUnitAiEvals\Vcr\VcrMode;
 
@@ -45,6 +46,8 @@ final class TestContextRegistry
 
     private static ?SecretScrubber $scrubber = null;
 
+    private static ?MatchingRules $matching = null;
+
     private static ?string $currentTest = null;
 
     /** @var array<string, TestMetrics> */
@@ -53,11 +56,18 @@ final class TestContextRegistry
     /** @var array<string, array<string, true>> cassette path => set of "kind:hash:occurrence" */
     private static array $used = [];
 
-    public static function configure(?string $cassettesPath, ?VcrMode $mode, ?SecretScrubber $scrubber = null): void
+    public static function configure(?string $cassettesPath, ?VcrMode $mode, ?SecretScrubber $scrubber = null, ?MatchingRules $matching = null): void
     {
         self::$cassettesPath = $cassettesPath;
         self::$mode = $mode;
         self::$scrubber = $scrubber;
+        self::$matching = $matching;
+    }
+
+    /** Request matching set by the extension parameters; #[AiVcr] adds to it per class and test. */
+    public static function matchingRules(): MatchingRules
+    {
+        return self::$matching ??= new MatchingRules();
     }
 
     public static function scrubber(): SecretScrubber
@@ -165,6 +175,7 @@ final class TestContextRegistry
         self::$cassettesPath = null;
         self::$mode = null;
         self::$scrubber = null;
+        self::$matching = null;
         self::$currentTest = null;
         self::$tests = [];
         self::$used = [];

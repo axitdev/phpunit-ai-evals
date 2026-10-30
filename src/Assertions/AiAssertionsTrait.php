@@ -7,14 +7,18 @@ namespace Axitdev\PhpUnitAiEvals\Assertions;
 use Axitdev\PhpUnitAiEvals\Assertions\Constraints\MatchesJsonSchemaConstraint;
 use Axitdev\PhpUnitAiEvals\Assertions\Constraints\MatchesRubricConstraint;
 use Axitdev\PhpUnitAiEvals\Assertions\Constraints\NoHallucinationConstraint;
+use Axitdev\PhpUnitAiEvals\Assertions\Constraints\SemanticSimilarityConstraint;
 use Axitdev\PhpUnitAiEvals\Assertions\Constraints\ToolCalledConstraint;
 use Axitdev\PhpUnitAiEvals\Assertions\Constraints\ToolCallOrderConstraint;
 use Axitdev\PhpUnitAiEvals\Assertions\Constraints\TraceBudgetConstraint;
 use Axitdev\PhpUnitAiEvals\Attributes\AiJudgeConfig;
 use Axitdev\PhpUnitAiEvals\Attributes\AiVcr;
+use Axitdev\PhpUnitAiEvals\Conversation\Conversation;
+use Axitdev\PhpUnitAiEvals\Conversation\Turn;
 use Axitdev\PhpUnitAiEvals\Judge\CachedJudgeClient;
 use Axitdev\PhpUnitAiEvals\Judge\JudgeClientInterface;
 use Axitdev\PhpUnitAiEvals\Judge\JudgeSettings;
+use Axitdev\PhpUnitAiEvals\Judge\LazyJudgeClient;
 use Axitdev\PhpUnitAiEvals\Judge\Psr18JudgeClient;
 use Axitdev\PhpUnitAiEvals\PhpUnit\TestContextRegistry;
 use Axitdev\PhpUnitAiEvals\Trace\AiInteraction;
@@ -22,6 +26,8 @@ use Axitdev\PhpUnitAiEvals\Trace\AiTraceCollector;
 use Axitdev\PhpUnitAiEvals\Trace\Parser\ProviderPayloadParserInterface;
 use Axitdev\PhpUnitAiEvals\Vcr\AiVcrClient;
 use Axitdev\PhpUnitAiEvals\Vcr\CassetteStorage;
+use Axitdev\PhpUnitAiEvals\Vcr\Exception\CassetteMissException;
+use Axitdev\PhpUnitAiEvals\Vcr\MatchingRules;
 use Axitdev\PhpUnitAiEvals\Vcr\OccurrenceCounter;
 use Axitdev\PhpUnitAiEvals\Vcr\PromptNormalizer;
 use Axitdev\PhpUnitAiEvals\Vcr\VcrMode;
@@ -29,6 +35,7 @@ use InvalidArgumentException;
 use LogicException;
 use PHPUnit\Framework\Assert;
 use PHPUnit\Framework\AssertionFailedError;
+use PHPUnit\Framework\Attributes\After;
 use PHPUnit\Framework\Attributes\Before;
 use PHPUnit\Framework\IncompleteTest;
 use PHPUnit\Framework\SkippedTest;
@@ -48,6 +55,12 @@ trait AiAssertionsTrait
     /** @var array<string, OccurrenceCounter> per cassette path, shared by every client wrapped in this test */
     private array $aiOccurrenceCounters = [];
 
+    /** @var list<AiVcrClient> every client wrapped in this test */
+    private array $aiVcrClients = [];
+
+    /** @var array{string, int}|null conversation name and turn being answered */
+    private ?array $aiActiveTurn = null;
+
     #[Before]
     protected function resetAiEvalState(): void
     {
@@ -55,6 +68,32 @@ trait AiAssertionsTrait
         $this->aiVcrClient = null;
         $this->aiJudgeClient = null;
         $this->aiOccurrenceCounters = [];
+        $this->aiVcrClients = [];
+        $this->aiActiveTurn = null;
+    }
+
+    /**
+     * Replay mode must never fall through to the network. A miss throws, but code under test can catch and swallow it
+     * (a retry wrapper, a fallback answer), and the test could then pass on behaviour that was never recorded. This
+     * fails such a test anyway.
+     */
+    #[After]
+    protected function failOnSwallowedCassetteMisses(): void
+    {
+        $clients = $this->aiVcrClients;
+        $this->aiVcrClients = [];
+        $status = $this->status();
+        if ((!$status->isSuccess() && !$status->isUnknown()) || $this->aiExpectsCassetteMiss()) {
+            return; // the miss, or something else, already failed the test; or the test is about the miss
+        }
+        $misses = array_merge([], ...array_map(static fn(AiVcrClient $c): array => $c->misses(), $clients));
+        if ($misses !== []) {
+            throw new AssertionFailedError(sprintf(
+                "%d request(s) missed the cassette in replay mode, and the code under test caught the error instead of failing.\n\n%s",
+                count($misses),
+                $misses[0]->getMessage(),
+            ));
+        }
     }
 
     protected function wrapHttpClient(ClientInterface $client): AiVcrClient
@@ -64,18 +103,24 @@ trait AiAssertionsTrait
         $storage = new CassetteStorage($this->aiCassettesPath());
         $path = $storage->pathFor($vcr->cassette ?? $testName);
 
-        return $this->aiVcrClient = new AiVcrClient(
+        $vcrClient = new AiVcrClient(
             $client,
             $storage,
             $path,
             $testName,
             VcrMode::resolve($vcr->mode ?? TestContextRegistry::configuredMode() ?? VcrMode::Auto),
             AiTraceCollector::current(),
-            new PromptNormalizer($vcr->ignorePatterns, $vcr->ignoreDatesAndUuids ?? true),
+            new PromptNormalizer($vcr->ignorePatterns, $vcr->ignoreDatesAndUuids ?? true, $this->aiMatchingRules()),
             $this->aiPayloadParsers(),
             TestContextRegistry::scrubber(),
             occurrences: $this->aiOccurrenceCounters[$path] ??= new OccurrenceCounter(),
         );
+        if ($this->aiActiveTurn !== null) {
+            $vcrClient->enterTurn(...$this->aiActiveTurn);
+        }
+        $this->aiVcrClients[] = $vcrClient;
+
+        return $this->aiVcrClient = $vcrClient;
     }
 
     /**
@@ -198,10 +243,57 @@ trait AiAssertionsTrait
 
     /**
      * @param array<string, mixed>|string $schema JSON Schema as an array or a JSON string
+     * @param string|AiInteraction|null $output The JSON text, an interaction, or null for the last interaction's answer
      */
-    public static function assertMatchesJsonSchema(array|string $schema, string $json, string $message = ''): void
+    public static function assertMatchesJsonSchema(array|string $schema, string|AiInteraction|null $output = null, string $message = ''): void
     {
-        Assert::assertThat($json, new MatchesJsonSchemaConstraint($schema), $message);
+        Assert::assertThat(StructuredOutput::text($output), new MatchesJsonSchemaConstraint($schema), $message);
+    }
+
+    /**
+     * A numeric field of a JSON answer is at least $min, e.g. `assertScoreAtLeast('scores.relevance', 0.7)`.
+     *
+     * @param string $field Dot path (`scores.relevance`, `items.0.score`) or JSON Pointer (`/scores/relevance`)
+     * @param string|AiInteraction|null $output The JSON text, an interaction, or null for the last interaction's answer
+     */
+    public static function assertScoreAtLeast(string $field, float $min, string|AiInteraction|null $output = null, string $message = ''): void
+    {
+        $value = StructuredOutput::number(StructuredOutput::decode($output), $field);
+        Assert::assertGreaterThanOrEqual($min, $value, self::aiMessage($message, sprintf('Field `%s` of the model output is %s, below the minimum of %s.', $field, $value, $min)));
+    }
+
+    /**
+     * A numeric field of a JSON answer lies within [$min, $max], bounds included.
+     *
+     * @param string|AiInteraction|null $output The JSON text, an interaction, or null for the last interaction's answer
+     */
+    public static function assertScoreBetween(string $field, float $min, float $max, string|AiInteraction|null $output = null, string $message = ''): void
+    {
+        if ($min > $max) {
+            throw new InvalidArgumentException(sprintf('assertScoreBetween() needs min <= max, got %s and %s.', $min, $max));
+        }
+        $value = StructuredOutput::number(StructuredOutput::decode($output), $field);
+        $why = sprintf('Field `%s` of the model output is %s, outside [%s, %s].', $field, $value, $min, $max);
+        Assert::assertGreaterThanOrEqual($min, $value, self::aiMessage($message, $why));
+        Assert::assertLessThanOrEqual($max, $value, self::aiMessage($message, $why));
+    }
+
+    /**
+     * A field of a JSON answer is one of the allowed values (enum membership), compared strictly: `"1"` is not `1`.
+     *
+     * @param list<string|int|float|bool|null> $allowed
+     * @param string|AiInteraction|null $output The JSON text, an interaction, or null for the last interaction's answer
+     */
+    public static function assertFieldIn(string $field, array $allowed, string|AiInteraction|null $output = null, string $message = ''): void
+    {
+        $value = StructuredOutput::field(StructuredOutput::decode($output), $field);
+        $render = static fn(mixed $v): string => (string) json_encode($v, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        Assert::assertContains($value, $allowed, self::aiMessage($message, sprintf(
+            'Field `%s` of the model output is %s, which is not one of: %s.',
+            $field,
+            $render($value),
+            implode(', ', array_map($render, $allowed)),
+        )));
     }
 
     /**
@@ -220,6 +312,9 @@ trait AiAssertionsTrait
         );
     }
 
+    /**
+     * Rubric, output, or both may be in any language.
+     */
     public function assertMatchesRubric(
         string $rubric,
         string $actualOutput,
@@ -227,6 +322,116 @@ trait AiAssertionsTrait
         string $message = '',
     ): void {
         Assert::assertThat($actualOutput, new MatchesRubricConstraint($this->aiJudge(), $rubric, $threshold), $message);
+    }
+
+    /**
+     * Grades every variant of one answer (typically its translations) against the same rubric and fails listing each
+     * variant that missed, with its score and the judge's reason.
+     *
+     * @param array<string, string> $variants Label => text, e.g. `['en' => ..., 'pl' => ..., 'uk' => ...]`
+     */
+    public function assertVariantsMatchRubric(
+        string $rubric,
+        array $variants,
+        float $threshold = 0.80,
+        string $message = '',
+    ): void {
+        $this->assertVariants($variants, fn(string $label): MatchesRubricConstraint => new MatchesRubricConstraint($this->aiJudge(), $rubric, $threshold, $label), sprintf('the rubric "%s"', $rubric), $message);
+    }
+
+    /**
+     * The output means the same as the reference, judged by meaning rather than wording; they need not share a
+     * language, so one English reference can check every translation.
+     */
+    public function assertSemanticallySimilar(
+        string $reference,
+        string $actualOutput,
+        float $threshold = 0.80,
+        string $message = '',
+    ): void {
+        Assert::assertThat($actualOutput, new SemanticSimilarityConstraint($this->aiJudge(), $reference, $threshold), $message);
+    }
+
+    /**
+     * assertSemanticallySimilar() for each variant, failing with the list of variants that missed.
+     *
+     * @param array<string, string> $variants Label => text
+     */
+    public function assertVariantsSemanticallySimilar(
+        string $reference,
+        array $variants,
+        float $threshold = 0.80,
+        string $message = '',
+    ): void {
+        $this->assertVariants($variants, fn(string $label): SemanticSimilarityConstraint => new SemanticSimilarityConstraint($this->aiJudge(), $reference, $threshold, $label), 'the reference answer', $message);
+    }
+
+    /**
+     * Plays a scripted conversation against the agent under test, one user turn at a time, running each turn's
+     * assertions on its reply before the next turn is sent.
+     *
+     * The agent receives the Conversation (its messages() end with the user message to answer) and returns the reply:
+     * a string, the AiInteraction that produced it, or null to use the last interaction's text.
+     *
+     * Each turn is cassetted on its own: its requests match by turn number, the turn's own messages and the fixed
+     * parts of the request (system prompt, tools, model), not by earlier replies. Editing one turn re-records just that
+     * turn; later turns keep replaying answers recorded against the old history, so re-record the whole test
+     * (AI_EVAL_MODE=record) when you want a consistent transcript.
+     *
+     * @param callable(Conversation): (string|AiInteraction|null) $agent
+     * @param list<Turn> $turns
+     */
+    protected function runConversation(string $name, callable $agent, array $turns): Conversation
+    {
+        if ($turns === []) {
+            throw new InvalidArgumentException('runConversation() needs at least one Turn.');
+        }
+        $conversation = new Conversation($name);
+        foreach (array_values($turns) as $i => $turn) {
+            $index = $i + 1;
+            $conversation->begin($turn->message);
+            $before = count(AiTraceCollector::current()->all());
+            $this->aiActiveTurn = [$name, $index];
+            foreach ($this->aiVcrClients as $client) {
+                $client->enterTurn($name, $index);
+            }
+            try {
+                $reply = $agent($conversation);
+            } finally {
+                $this->aiActiveTurn = null;
+                foreach ($this->aiVcrClients as $client) {
+                    $client->leaveTurn();
+                }
+            }
+            $interactions = array_slice(AiTraceCollector::current()->all(), $before);
+            $text = match (true) {
+                is_string($reply) => $reply,
+                $reply instanceof AiInteraction => $reply->assistantContent,
+                $interactions !== [] => $interactions[count($interactions) - 1]->assistantContent,
+                default => throw new LogicException(sprintf('Turn %d of conversation "%s": the agent returned null and made no AI call through wrapHttpClient(); return the reply text instead.', $index, $name)),
+            };
+            $conversation->complete($text, $interactions);
+
+            if ($turn->assert === null) {
+                continue;
+            }
+            try {
+                ($turn->assert)($text, $conversation);
+            } catch (SkippedTest|IncompleteTest $e) {
+                throw $e;
+            } catch (AssertionFailedError $e) {
+                throw new AssertionFailedError(sprintf(
+                    "Turn %d of conversation \"%s\" failed.\nUser: %s\nReply: %s\n\n%s",
+                    $index,
+                    $name,
+                    StructuredOutput::preview($turn->message),
+                    StructuredOutput::preview($text),
+                    $e->getMessage(),
+                ), 0, $e);
+            }
+        }
+
+        return $conversation;
     }
 
     /**
@@ -297,6 +502,65 @@ trait AiAssertionsTrait
     }
 
     /**
+     * @param array<string, string> $variants
+     * @param callable(string): (MatchesRubricConstraint|SemanticSimilarityConstraint) $constraintFor
+     */
+    private function assertVariants(array $variants, callable $constraintFor, string $what, string $message): void
+    {
+        if ($variants === []) {
+            throw new InvalidArgumentException('Pass at least one variant, e.g. [\'en\' => $english, \'pl\' => $polish].');
+        }
+        $failed = [];
+        $passed = [];
+        foreach ($variants as $label => $text) {
+            $constraint = $constraintFor((string) $label);
+            if ($constraint->evaluate($text, '', true) === true) {
+                $passed[] = (string) $label;
+                continue;
+            }
+            $verdict = $constraint->verdict();
+            $failed[] = sprintf(
+                '  [%s] score %.2f (threshold %.2f): %s',
+                $label,
+                $verdict === null ? 0.0 : $verdict->score,
+                $constraint->threshold(),
+                $verdict === null ? '' : $verdict->reason,
+            );
+        }
+        if ($failed !== []) {
+            Assert::fail(self::aiMessage($message, sprintf(
+                "%d of %d variants do not satisfy %s:\n%s\nPassed: %s",
+                count($failed),
+                count($variants),
+                $what,
+                implode("\n", $failed),
+                $passed === [] ? 'none' : implode(', ', $passed),
+            )));
+        }
+        Assert::assertSame([], $failed); // counts as an assertion
+    }
+
+    /**
+     * Whether the test called expectException() with CassetteMissException or a parent of it. PHPUnit has no public
+     * getter for this, so it is read from TestCase; if that ever moves, the guard stays quiet rather than wrong.
+     */
+    private function aiExpectsCassetteMiss(): bool
+    {
+        try {
+            $expected = (new \ReflectionProperty(\PHPUnit\Framework\TestCase::class, 'expectedException'))->getValue($this);
+        } catch (\ReflectionException) {
+            return true;
+        }
+
+        return is_string($expected) && is_a(CassetteMissException::class, $expected, true);
+    }
+
+    private static function aiMessage(string $custom, string $default): string
+    {
+        return $custom === '' ? $default : $custom . "\n" . $default;
+    }
+
+    /**
      * @param AiInteraction|list<AiInteraction>|null $interactions
      * @return list<AiInteraction>
      */
@@ -324,8 +588,7 @@ trait AiAssertionsTrait
         ));
         $http = $vcr->inner();
 
-        $live = (new ReflectionClass(Psr18JudgeClient::class))
-            ->newLazyProxy(static fn(): Psr18JudgeClient => new Psr18JudgeClient($http, $settings));
+        $live = new LazyJudgeClient(static fn(): Psr18JudgeClient => new Psr18JudgeClient($http, $settings));
 
         return $this->aiJudgeClient = new CachedJudgeClient($vcr, $live, $settings->model);
     }
@@ -340,6 +603,22 @@ trait AiAssertionsTrait
             ($method?->ignorePatterns ?: null) ?? $class->ignorePatterns ?? [],
             $method->ignoreDatesAndUuids ?? $class?->ignoreDatesAndUuids,
         );
+    }
+
+    /**
+     * The extension's matching rules, plus the class's #[AiVcr], plus the method's.
+     */
+    private function aiMatchingRules(): MatchingRules
+    {
+        [$method, $class] = $this->attributes(AiVcr::class);
+        $rules = TestContextRegistry::matchingRules();
+        foreach ([$class, $method] as $attribute) {
+            if ($attribute !== null) {
+                $rules = $rules->merge($attribute->matchingRules());
+            }
+        }
+
+        return $rules;
     }
 
     /**

@@ -4,11 +4,14 @@ declare(strict_types=1);
 
 namespace Axitdev\PhpUnitAiEvals\Vcr\Exception;
 
-use Axitdev\PhpUnitAiEvals\Vcr\Cassette;
 use RuntimeException;
 
 final class CassetteMissException extends RuntimeException
 {
+    private const MAX_FIELDS = 12;
+
+    private const MAX_VALUE_LENGTH = 160;
+
     /**
      * @param array<string, mixed> $current Normalized payload of the request that missed
      * @param array<string, mixed>|null $closest Normalized payload of the closest recorded interaction
@@ -35,9 +38,22 @@ final class CassetteMissException extends RuntimeException
             'Cassette: ' . $cassettePath,
         ];
         if ($closest !== null) {
+            $fields = self::fieldDiff($closest, $current);
             $lines[] = '';
-            $lines[] = "Diff against the closest recorded interaction (- recorded, + current):";
-            $lines[] = self::diff($closest, $current);
+            if ($fields === []) {
+                $lines[] = 'The closest recorded interaction has the same fields and values; only their order differs.';
+            } else {
+                $lines[] = sprintf('Differs from the closest recorded interaction in: %s', implode(', ', array_keys($fields)));
+                foreach (array_slice($fields, 0, self::MAX_FIELDS, true) as $path => [$recorded, $now]) {
+                    $lines[] = '  ' . $path;
+                    $lines[] = '    recorded: ' . $recorded;
+                    $lines[] = '    current:  ' . $now;
+                }
+                if (count($fields) > self::MAX_FIELDS) {
+                    $lines[] = sprintf('  ... and %d more', count($fields) - self::MAX_FIELDS);
+                }
+            }
+            $lines[] = 'Fields can be ignored or normalized with #[AiVcr(ignoreFields: [...], normalizeFields: [...])].';
         }
         $lines[] = '';
         $lines[] = 'Re-record with: AI_EVAL_MODE=record vendor/bin/phpunit --filter ' . self::filterFor($testName);
@@ -46,22 +62,38 @@ final class CassetteMissException extends RuntimeException
     }
 
     /**
-     * @param array<string, mixed> $recorded
-     * @param array<string, mixed> $current
+     * Dot path of every differing field => [recorded, current], rendered. A subtree present on one side only is reported
+     * once at its root rather than leaf by leaf.
+     *
+     * @param array<mixed> $recorded
+     * @param array<mixed> $current
+     * @return array<string, array{string, string}>
      */
-    private static function diff(array $recorded, array $current): string
+    private static function fieldDiff(array $recorded, array $current, string $prefix = ''): array
     {
-        $old = Cassette::lines($recorded);
-        $new = Cassette::lines($current);
         $out = [];
-        foreach (array_diff($old, $new) as $line) {
-            $out[] = '- ' . $line;
-        }
-        foreach (array_diff($new, $old) as $line) {
-            $out[] = '+ ' . $line;
+        $keys = array_keys($recorded + $current);
+        foreach ($keys as $key) {
+            $path = $prefix === '' ? (string) $key : $prefix . '.' . $key;
+            $hasOld = array_key_exists($key, $recorded);
+            $hasNew = array_key_exists($key, $current);
+            $old = $recorded[$key] ?? null;
+            $new = $current[$key] ?? null;
+            if ($hasOld && $hasNew && is_array($old) && is_array($new) && $old !== [] && $new !== []) {
+                $out += self::fieldDiff($old, $new, $path);
+            } elseif (!$hasOld || !$hasNew || self::render($old) !== self::render($new)) {
+                $out[$path] = [$hasOld ? self::render($old) : '(absent)', $hasNew ? self::render($new) : '(absent)'];
+            }
         }
 
-        return $out === [] ? '(payloads differ only in line order)' : implode("\n", $out);
+        return $out;
+    }
+
+    private static function render(mixed $value): string
+    {
+        $json = (string) json_encode($value, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRESERVE_ZERO_FRACTION);
+
+        return mb_strlen($json) > self::MAX_VALUE_LENGTH ? mb_substr($json, 0, self::MAX_VALUE_LENGTH - 3) . '...' : $json;
     }
 
     /**

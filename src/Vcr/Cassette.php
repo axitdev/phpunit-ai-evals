@@ -13,7 +13,7 @@ use UnexpectedValueException;
  */
 final class Cassette
 {
-    public const VERSION = '1.0';
+    public const VERSION = '1.1';
 
     public const KIND_AGENT = 'agent_call';
 

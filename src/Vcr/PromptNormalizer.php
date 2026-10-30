@@ -30,7 +30,7 @@ final class PromptNormalizer
 
     private const UUID = '/\b[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b/i';
 
-    private const BASE64_DATA_URI = '#data:([\w.+-]+/[\w.+-]+);base64,[A-Za-z0-9+/=_-]+#';
+    private readonly MatchingRules $rules;
 
     /**
      * @param list<string> $ignorePatterns Custom PCRE patterns replaced with <IGNORED>
@@ -39,7 +39,15 @@ final class PromptNormalizer
     public function __construct(
         private readonly array $ignorePatterns = [],
         private readonly bool $ignoreDatesAndUuids = true,
-    ) {}
+        ?MatchingRules $rules = null,
+    ) {
+        $this->rules = $rules ?? new MatchingRules();
+    }
+
+    public function rules(): MatchingRules
+    {
+        return $this->rules;
+    }
 
     /**
      * @param array<mixed> $payload Decoded request body
@@ -48,7 +56,7 @@ final class PromptNormalizer
     public function normalize(array $payload): array
     {
         $semantic = [];
-        foreach (self::SEMANTIC_KEYS as $key) {
+        foreach ([...self::SEMANTIC_KEYS, ...$this->rules->matchFields] as $key) {
             if (array_key_exists($key, $payload)) {
                 $semantic[$key] = $payload[$key];
             }
@@ -72,13 +80,26 @@ final class PromptNormalizer
     }
 
     /**
-     * Non-LLM traffic: the body is kept whole, minus the same volatile values as prompts.
+     * Non-LLM traffic: the body is kept whole (decoded JSON, multipart fields, or text; see RequestBody), minus the
+     * same volatile values as prompts.
      *
-     * @return array{method: string, uri: string, body: string}
+     * @param string|array<mixed> $body
+     * @return array{method: string, uri: string, body: mixed}
      */
-    public function normalizeRaw(string $method, string $uri, string $body): array
+    public function normalizeRaw(string $method, string $uri, string|array $body): array
     {
-        return ['method' => $method, 'uri' => $this->scrubString($uri), 'body' => $this->scrubString($body)];
+        return ['method' => $method, 'uri' => $this->scrubString($uri), 'body' => $this->canonicalize($body)];
+    }
+
+    /**
+     * The configured MatchingRules applied to a normalized payload: what is hashed and what a miss is diffed against.
+     *
+     * @param array<string, mixed> $normalized
+     * @return array<string, mixed>
+     */
+    public function match(array $normalized): array
+    {
+        return $this->rules->apply($normalized);
     }
 
     /**
@@ -105,9 +126,8 @@ final class PromptNormalizer
         if (($value['type'] ?? null) === 'thinking') {
             unset($value['signature']);
         }
-        if (($value['type'] ?? null) === 'base64' && is_string($value['data'] ?? null)) {
-            $value['data'] = '<BASE64_SHA256:' . hash('sha256', $value['data']) . '>';
-        }
+        // Anthropic `source`, Gemini `inlineData`, OpenAI `input_audio`: bytes become hash + size + MIME type.
+        $value = BinaryContent::replaceBase64Field($value);
 
         $out = [];
         foreach ($value as $k => $v) {
@@ -132,11 +152,7 @@ final class PromptNormalizer
 
     private function scrubString(string $text): string
     {
-        $text = (string) preg_replace_callback(
-            self::BASE64_DATA_URI,
-            static fn(array $m): string => '<BASE64_SHA256:' . hash('sha256', $m[0]) . '>',
-            $text,
-        );
+        $text = BinaryContent::replaceDataUris($text);
         if ($this->ignoreDatesAndUuids) {
             $text = $this->replace(self::UUID, '<UUID>', $text);
             $text = $this->replace(self::ISO_DATE, '<TIMESTAMP>', $text);
