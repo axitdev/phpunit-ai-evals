@@ -9,14 +9,22 @@ use Axitdev\PhpUnitAiEvals\Judge\JudgePrompts;
 
 final class MatchesRubricConstraint extends JudgedConstraint
 {
-    public function __construct(JudgeClientInterface $judge, private readonly string $rubric, float $threshold = 0.80)
-    {
+    /**
+     * @param string|null $variant Label of the answer variant being graded, e.g. a language code; reports and baselines
+     *                             then track each variant's score separately
+     */
+    public function __construct(
+        JudgeClientInterface $judge,
+        private readonly string $rubric,
+        float $threshold = 0.80,
+        private readonly ?string $variant = null,
+    ) {
         parent::__construct($judge, $threshold);
     }
 
     protected function description(): string
     {
-        return 'satisfies the rubric "' . $this->rubric . '"';
+        return 'satisfies the rubric "' . $this->rubric . '"' . ($this->variant !== null ? ' [' . $this->variant . ']' : '');
     }
 
     protected function systemPrompt(): string

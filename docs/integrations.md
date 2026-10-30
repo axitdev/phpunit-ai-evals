@@ -44,7 +44,35 @@ Checked against the live API with `anthropic-ai/sdk` 1.1: `messages->create()` a
 
 ## Laravel's HTTP client and Prism
 
-Laravel's `Http` client runs on Guzzle and doesn't accept a PSR-18 client. Instead, register a global Guzzle middleware that hands every request to the recorder. The recorder sends the live ones through a plain Guzzle client:
+Add the `FakesAiHttp` trait next to `AiAssertionsTrait` and call `fakeAiHttp()`. Existing feature tests then get cassettes without other changes: calls made with `Http` (and so with Prism) go through an `Http::fake()` callback into the recorder.
+
+```php
+use Axitdev\PhpUnitAiEvals\Assertions\AiAssertionsTrait;
+use Axitdev\PhpUnitAiEvals\Laravel\FakesAiHttp;
+
+final class SummaryTest extends TestCase
+{
+    use AiAssertionsTrait, FakesAiHttp;
+
+    public function test_it_summarises_an_upload(): void
+    {
+        $this->fakeAiHttp(['api.openai.com/*', 'api.anthropic.com/*']);
+
+        $this->post('/summaries', ['file' => UploadedFile::fake()->image('scan.png')])->assertOk();
+
+        self::assertToolCalled('save_summary');
+    }
+}
+```
+
+- Replays come from the cassette. Record mode, and auto mode when a request isn't recorded yet, send the call to the real provider through a plain Guzzle client, with the original call's timeouts, proxy and TLS options, and write the cassette.
+- Pass URL patterns as you would to `Http::fake()`; the default `*` records every call. In `replay` mode the bridge also calls `Http::preventStrayRequests()`, so a call outside the patterns fails instead of reaching the network.
+- Laravel's own `Http::assertSent()` and friends keep working.
+- `fakeAiHttp()` takes an optional `Factory` (instead of the facade) and an optional PSR-18 client for live calls, and returns the recorder.
+
+It needs `illuminate/http` 11 or 12, which a Laravel app already has.
+
+If you'd rather not fake `Http`, a global Guzzle middleware that hands every request to the recorder works too. The recorder sends the live ones through a plain Guzzle client:
 
 ```php
 use GuzzleHttp\Promise\Create;

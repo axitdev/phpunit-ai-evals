@@ -10,6 +10,7 @@ use Axitdev\PhpUnitAiEvals\Judge\JudgeClientInterface;
 use Axitdev\PhpUnitAiEvals\Judge\JudgePrompts;
 use Axitdev\PhpUnitAiEvals\Judge\JudgeSettings;
 use Axitdev\PhpUnitAiEvals\Judge\JudgeVerdict;
+use Axitdev\PhpUnitAiEvals\Judge\LazyJudgeClient;
 use Axitdev\PhpUnitAiEvals\Judge\Psr18JudgeClient;
 use Axitdev\PhpUnitAiEvals\Support\Payload;
 use Axitdev\PhpUnitAiEvals\Tests\Support\FakeClient;
@@ -23,7 +24,6 @@ use JsonException;
 use PHPUnit\Framework\Attributes\After;
 use PHPUnit\Framework\Attributes\Before;
 use PHPUnit\Framework\TestCase;
-use ReflectionClass;
 use RuntimeException;
 
 final class JudgeTest extends TestCase
@@ -227,9 +227,8 @@ final class JudgeTest extends TestCase
         $vcr = static fn(VcrMode $mode): AiVcrClient => new AiVcrClient(new FakeClient(), $storage, $path, 'j', $mode, new AiTraceCollector());
 
         $initialized = 0;
-        $reflection = new ReflectionClass(Psr18JudgeClient::class);
-        $lazy = static function () use (&$initialized, $reflection): JudgeClientInterface {
-            return $reflection->newLazyProxy(static function () use (&$initialized): Psr18JudgeClient {
+        $lazy = static function () use (&$initialized): JudgeClientInterface {
+            return new LazyJudgeClient(static function () use (&$initialized): Psr18JudgeClient {
                 $initialized++;
 
                 return new Psr18JudgeClient(

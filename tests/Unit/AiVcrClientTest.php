@@ -113,8 +113,9 @@ final class AiVcrClientTest extends TestCase
             $client->sendRequest(FakeClient::request(self::URI, $this->prompt('Refund order #405')));
             self::fail('expected miss');
         } catch (CassetteMissException $e) {
-            self::assertStringContainsString('-             "content": "Refund order #404"', $e->getMessage());
-            self::assertStringContainsString('+             "content": "Refund order #405"', $e->getMessage());
+            self::assertStringContainsString('Differs from the closest recorded interaction in: messages.0.content', $e->getMessage());
+            self::assertStringContainsString('recorded: "Refund order #404"', $e->getMessage());
+            self::assertStringContainsString('current:  "Refund order #405"', $e->getMessage());
             self::assertStringContainsString('AI_EVAL_MODE=record vendor/bin/phpunit --filter ' . escapeshellarg('T::t\b'), $e->getMessage());
         }
     }
@@ -452,7 +453,7 @@ final class AiVcrClientTest extends TestCase
             $this->client(new FakeClient(), VcrMode::Replay)->judgeVerdict($payload('rubric B'), static fn(): JudgeVerdict => new JudgeVerdict(0.0, ''));
             self::fail('expected a miss');
         } catch (CassetteMissException $e) {
-            self::assertStringContainsString('-             "content": "rubric A"', $e->getMessage());
+            self::assertStringContainsString('recorded: "rubric A"', $e->getMessage());
         }
     }
 

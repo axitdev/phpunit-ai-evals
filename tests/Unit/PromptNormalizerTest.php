@@ -89,7 +89,7 @@ final class PromptNormalizerTest extends TestCase
         ]]]));
 
         self::assertSame(
-            'On <TIMESTAMP> and <TIMESTAMP> and <TIMESTAMP>, id <UUID> / <UUID> <BASE64_SHA256:' . hash('sha256', $uri) . '>',
+            'On <TIMESTAMP> and <TIMESTAMP> and <TIMESTAMP>, id <UUID> / <UUID> <binary sha256=' . hash('sha256', "\0\0\0") . ' size=3 mime=image/png>',
             Payload::get($out, 'messages', 0, 'content'),
         );
     }
@@ -101,7 +101,7 @@ final class PromptNormalizerTest extends TestCase
         ]]]]));
 
         self::assertSame(
-            '<BASE64_SHA256:' . hash('sha256', 'AAAA') . '>',
+            '<binary sha256=' . hash('sha256', "\0\0\0") . ' size=3 mime=image/png>',
             Payload::get($out, 'messages', 0, 'content', 0, 'source', 'data'),
         );
     }

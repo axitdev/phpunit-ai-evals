@@ -1,5 +1,9 @@
 parameters:
     level: max
+    # The lowest supported PHP, so 8.4-only functions and syntax are reported.
+    phpVersion:
+        min: 80300
+        max: 80599
     paths:
         - src
         - tests

@@ -13,15 +13,25 @@ final class JudgePrompts
 
     private const RESPONSE = 'Respond with ONLY a JSON object: {"reason": string, "score": number between 0.0 and 1.0}. Write the reason first.';
 
+    /** Graders otherwise mark down correct answers for not being in English. */
+    private const LANGUAGE = 'The texts may be in any language, and need not share one. Judge their meaning, not their language,'
+        . ' unless the instructions ask for a specific language.';
+
     public const HALLUCINATION_SYSTEM = <<<TXT
         You are a strict fact-checking judge. Decide whether the OUTPUT contains claims that are not supported by the CONTEXT.
         Score 1.0 when every claim is supported, 0.0 when the output is mostly unsupported or contradicts the context.
-        TXT . "\n" . self::UNTRUSTED . "\n" . self::RESPONSE;
+        TXT . "\n" . self::LANGUAGE . "\n" . self::UNTRUSTED . "\n" . self::RESPONSE;
 
     public const RUBRIC_SYSTEM = <<<TXT
         You are a strict grading judge. Grade the OUTPUT against the RUBRIC.
         Score 1.0 when the rubric is fully satisfied, 0.0 when it is not satisfied at all.
-        TXT . "\n" . self::UNTRUSTED . "\n" . self::RESPONSE;
+        TXT . "\n" . self::LANGUAGE . "\n" . self::UNTRUSTED . "\n" . self::RESPONSE;
+
+    public const SIMILARITY_SYSTEM = <<<TXT
+        You are a strict semantic-equivalence judge. Decide whether the OUTPUT conveys the same meaning as the REFERENCE.
+        Score 1.0 when every fact and intent in the reference is present and nothing contradicts it, 0.0 when the meaning
+        is unrelated or contradicts it. Wording, length, formatting and language do not matter.
+        TXT . "\n" . self::LANGUAGE . "\n" . self::UNTRUSTED . "\n" . self::RESPONSE;
 
     /**
      * @param list<string> $context
@@ -34,6 +44,11 @@ final class JudgePrompts
     public static function rubric(string $rubric, string $output): string
     {
         return "RUBRIC:\n" . $rubric . "\n\n" . self::output($output);
+    }
+
+    public static function similarity(string $reference, string $output): string
+    {
+        return "REFERENCE:\n" . $reference . "\n\n" . self::output($output);
     }
 
     /**

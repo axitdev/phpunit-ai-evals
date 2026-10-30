@@ -218,7 +218,7 @@ final class ConstraintsTest extends TestCase
             self::assertThat('not json', new MatchesJsonSchemaConstraint($schema));
             self::fail('expected failure');
         } catch (AssertionFailedError $e) {
-            self::assertStringContainsString('Not valid JSON', $e->getMessage());
+            self::assertStringContainsString('The model output is not valid JSON', $e->getMessage());
         }
     }
 
@@ -247,7 +247,7 @@ final class ConstraintsTest extends TestCase
             $message(static fn() => self::assertThat('x', new NoHallucinationConstraint(new SpyJudge(0.1), ['ctx'], 0.85))),
         );
         self::assertStringContainsString(
-            'Not valid JSON: Syntax error',
+            'The model output is not valid JSON (Syntax error). Output: "{oops"',
             $message(static fn() => self::assertThat('{oops', new MatchesJsonSchemaConstraint(['type' => 'object']))),
         );
         self::assertStringContainsString(

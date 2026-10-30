@@ -31,8 +31,29 @@ final class SecretScrubber
     /** Headers add `key` (e.g. `ocp-apim-subscription-key`) and `cookie`, and leave out CORS `*-credentials`. */
     private const SECRET_HEADER = '/(?:^|[-_])(?:' . self::SECRET_WORDS . '|key|cookie)$/i';
 
+    /**
+     * Credentials recognised by their shape. Requests are scrubbed wherever these appear; responses only lose the exact
+     * values found in their request (see secretsIn()), so a model answer is never altered by a lookalike. A pattern's
+     * `secret` group, when it has one, is the part replaced: `Bearer ` and `Basic ` keep their scheme.
+     */
+    private const TOKEN_PATTERNS = [
+        // A token needs a digit, one of `=._+/`, or a capital after its first letter, so "Basic information" is prose.
+        '/\b(?:Bearer|Basic)\s+(?<secret>(?=[A-Za-z0-9._~+\/-]*(?:[0-9._+\/=]|(?<=[A-Za-z0-9])[A-Z]))[A-Za-z0-9._~+\/-]{8,}=*)/',
+        '/\bsk-(?:ant-|proj-|svcacct-|or-v1-)?(?=[A-Za-z0-9_-]*\d)[A-Za-z0-9_-]{20,}/', // OpenAI, Anthropic, OpenRouter
+        '/\b[rsp]k_(?:live|test)_[A-Za-z0-9]{16,}/',                                 // Stripe
+        '/\bAIza[0-9A-Za-z_-]{35}/',                                                 // Google API keys
+        '/\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/',                                           // AWS access key ids
+        '/\b(?:gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{22,})/',           // GitHub
+        '/\bxox[abposr]-[A-Za-z0-9-]{10,}/',                                         // Slack
+        '/\b(?:hf|gsk|xai|pplx)[_-][A-Za-z0-9]{30,}/',                               // Hugging Face, Groq, xAI, Perplexity
+        '/\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/',       // JWTs
+    ];
+
     /** @var list<string> */
     private readonly array $headers;
+
+    /** @var list<string> */
+    private readonly array $patterns;
 
     /** @var list<string> */
     private readonly array $keys;
@@ -43,9 +64,16 @@ final class SecretScrubber
     /**
      * @param list<string> $extraHeaders Header names redacted on top of the built-in list (case-insensitive)
      * @param list<string> $extraKeys Query, form and JSON key names redacted on top of the built-in list (case-insensitive)
+     * @param list<string> $extraPatterns PCRE patterns for credential values, treated like the built-in ones
      */
-    public function __construct(array $extraHeaders = [], array $extraKeys = [])
+    public function __construct(array $extraHeaders = [], array $extraKeys = [], array $extraPatterns = [])
     {
+        foreach ($extraPatterns as $pattern) {
+            if (@preg_match($pattern, '') === false) {
+                throw new \InvalidArgumentException(sprintf('Invalid redaction pattern: %s', $pattern));
+            }
+        }
+        $this->patterns = [...self::TOKEN_PATTERNS, ...$extraPatterns];
         $this->headers = [...self::HEADERS, ...array_map(strtolower(...), $extraHeaders)];
         $this->keys = [...self::KEYS, ...array_map(strtolower(...), $extraKeys)];
         $this->queryKeys = ['key', ...$this->keys];
@@ -53,16 +81,17 @@ final class SecretScrubber
 
     /**
      * @param array<string|array<string>> $headers
+     * @param bool $byShape Also redact credential-shaped values; off for response headers, which are replayed
      * @return array<string, list<string>>
      */
-    public function scrubHeaders(array $headers): array
+    public function scrubHeaders(array $headers, bool $byShape = true): array
     {
         $out = [];
         foreach ($headers as $name => $values) {
             $name = (string) $name;
             $out[$name] = in_array(strtolower($name), $this->headers, true) || preg_match(self::SECRET_HEADER, $name) === 1
                 ? [self::REDACTED]
-                : array_map(strval(...), array_values((array) $values));
+                : array_map(fn(mixed $v): string => $byShape ? $this->scrubText(strval($v)) : strval($v), array_values((array) $values));
         }
 
         return $out;
@@ -113,6 +142,105 @@ final class SecretScrubber
         }
 
         return $data;
+    }
+
+    /**
+     * Redacts credential-shaped values (API keys, bearer tokens, JWTs) in every string of $value, recursively.
+     *
+     * @template T of mixed
+     * @param T $value
+     * @return (T is string ? string : (T is array ? array<mixed> : T))
+     */
+    public function scrubValues(mixed $value): mixed
+    {
+        if (is_string($value)) {
+            return $this->scrubText($value);
+        }
+        if (is_array($value)) {
+            foreach ($value as $k => $v) {
+                $value[$k] = $this->scrubValues($v);
+            }
+        }
+
+        return $value;
+    }
+
+    /**
+     * scrubValues() for a string-keyed map, keeping its type.
+     *
+     * @param array<string, mixed> $map
+     * @return array<string, mixed>
+     */
+    public function scrubMap(array $map): array
+    {
+        foreach ($map as $k => $v) {
+            $map[$k] = $this->scrubValues($v);
+        }
+
+        return $map;
+    }
+
+    public function scrubText(string $text): string
+    {
+        foreach ($this->patterns as $pattern) {
+            $text = (string) preg_replace_callback(
+                $pattern,
+                static fn(array $m): string => isset($m['secret']) && $m['secret'] !== ''
+                    ? str_replace($m['secret'], self::REDACTED, $m[0])
+                    : self::REDACTED,
+                $text,
+            );
+        }
+
+        return $text;
+    }
+
+    /**
+     * The credential-shaped values in the given texts, longest first, for redactExact().
+     *
+     * @return list<string>
+     */
+    public function secretsIn(string ...$texts): array
+    {
+        $found = [];
+        foreach ($texts as $text) {
+            foreach ($this->patterns as $pattern) {
+                if (preg_match_all($pattern, $text, $matches, PREG_SET_ORDER) > 0) {
+                    foreach ($matches as $m) {
+                        $found[isset($m['secret']) && $m['secret'] !== '' ? $m['secret'] : $m[0]] = true;
+                    }
+                }
+            }
+        }
+        $secrets = array_map(strval(...), array_keys($found));
+        usort($secrets, static fn(string $a, string $b): int => strlen($b) <=> strlen($a));
+
+        return $secrets;
+    }
+
+    /**
+     * Replaces exactly these strings, recursively; used on responses, where a model may echo a key from the prompt.
+     *
+     * @template T of mixed
+     * @param T $value
+     * @param list<string> $secrets
+     * @return (T is string ? string : (T is array ? array<mixed> : T))
+     */
+    public function redactExact(mixed $value, array $secrets): mixed
+    {
+        if ($secrets === []) {
+            return $value;
+        }
+        if (is_string($value)) {
+            return str_replace($secrets, self::REDACTED, $value);
+        }
+        if (is_array($value)) {
+            foreach ($value as $k => $v) {
+                $value[$k] = $this->redactExact($v, $secrets);
+            }
+        }
+
+        return $value;
     }
 
     /**

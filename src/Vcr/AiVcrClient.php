@@ -54,6 +54,15 @@ final class AiVcrClient implements ClientInterface
 
     private readonly StreamFactoryInterface $streamFactory;
 
+    /** @var array{conversation: string, index: int}|null the conversation turn requests are scoped to, if any */
+    private ?array $turn = null;
+
+    /** @var array<string, int> per prompt list: how many entries came before the current turn */
+    private array $turnBase = [];
+
+    /** @var list<CassetteMissException> */
+    private array $misses = [];
+
     /**
      * @internal Tests get one from AiAssertionsTrait::wrapHttpClient()
      *
@@ -100,6 +109,43 @@ final class AiVcrClient implements ClientInterface
         return $this->inner;
     }
 
+    public function mode(): VcrMode
+    {
+        return $this->mode;
+    }
+
+    /**
+     * Misses raised by this client, including any the code under test caught and swallowed.
+     *
+     * @return list<CassetteMissException>
+     */
+    public function misses(): array
+    {
+        return $this->misses;
+    }
+
+    /**
+     * Scopes the following LLM requests to one turn of a scripted conversation: they match by the turn's position,
+     * its own messages and the unchanged parts of the request (system prompt, tools, model), not by the replies of
+     * earlier turns. A changed turn then re-records only itself.
+     *
+     * @internal Used by AiAssertionsTrait::runConversation()
+     */
+    public function enterTurn(string $conversation, int $index): void
+    {
+        $this->turn = ['conversation' => $conversation, 'index' => $index];
+        $this->turnBase = [];
+    }
+
+    /**
+     * @internal
+     */
+    public function leaveTurn(): void
+    {
+        $this->turn = null;
+        $this->turnBase = [];
+    }
+
     public function sendRequest(RequestInterface $request): ResponseInterface
     {
         $stream = $request->getBody();
@@ -111,8 +157,9 @@ final class AiVcrClient implements ClientInterface
         }
         $uri = (string) $request->getUri();
 
-        [$kind, $parser, $payload] = $this->classify($request->getMethod(), $uri, $body);
-        $hash = $this->normalizer->hash($payload);
+        [$kind, $parser, $payload] = $this->classify($request, $uri, $body);
+        $matched = $this->matchPayload($kind, $payload, $request);
+        $hash = $this->normalizer->hash($matched);
         $occurrence = $this->occurrences->next($kind, $hash);
 
         if ($this->mode->replays()) {
@@ -123,7 +170,7 @@ final class AiVcrClient implements ClientInterface
                 return $this->replay($entry, $parser, $payload);
             }
             if ($this->mode === VcrMode::Replay) {
-                throw $this->miss($kind, $hash, $occurrence, $payload);
+                throw $this->miss($kind, $hash, $occurrence, $matched);
             }
         }
 
@@ -160,10 +207,16 @@ final class AiVcrClient implements ClientInterface
 
         if ($this->mode->records() && $recordable) {
             $bodyField = $isStream ? $chunks : (is_array($decoded) && self::encodesBack($decoded, $raw) ? $decoded : $raw);
-            if ($kind === Cassette::KIND_RAW) {
+            $binary = is_string($bodyField) && !mb_check_encoding($bodyField, 'UTF-8');
+            if ($kind === Cassette::KIND_RAW && !$binary) {
                 $bodyField = is_array($bodyField) ? $this->scrubber->scrubData($bodyField) : $this->scrubber->scrubBody($bodyField);
             }
-            $binary = is_string($bodyField) && !mb_check_encoding($bodyField, 'UTF-8');
+            // The response is replayed, so it isn't scrubbed by shape (a lookalike in a model answer would change what
+            // the test sees); only credentials this request carried are removed, in case the response echoes one.
+            $secrets = $this->scrubber->secretsIn($uri, $body, ...array_merge([], ...array_values($request->getHeaders())));
+            if (!$binary) {
+                $bodyField = $this->scrubber->redactExact($bodyField, $secrets);
+            }
             $entry = [
                 'semantic_hash' => $hash,
                 'occurrence_index' => $occurrence,
@@ -172,22 +225,25 @@ final class AiVcrClient implements ClientInterface
                 'model' => Payload::string($payload['model'] ?? null),
                 'recorded_at' => (new DateTimeImmutable())->format(DATE_ATOM),
                 'request' => [
-                    'uri' => $this->scrubber->scrubUri($uri),
+                    'uri' => $this->scrubber->scrubValues($this->scrubber->scrubUri($uri)),
                     'headers' => $this->scrubber->scrubHeaders($request->getHeaders()),
-                    'normalized_payload' => $payload,
+                    'normalized_payload' => $matched,
                 ],
                 'response' => [
                     'status' => $status,
-                    'headers' => $this->scrubber->scrubHeaders(array_filter(
+                    'headers' => $this->scrubber->redactExact($this->scrubber->scrubHeaders(array_filter(
                         $live->getHeaders(),
                         static fn(string $name): bool => !in_array(strtolower($name), self::DROPPED_RESPONSE_HEADERS, true),
                         ARRAY_FILTER_USE_KEY,
-                    )),
+                    ), byShape: false), $secrets),
                     'is_stream' => $isStream,
                 ] + ($binary ? ['body_base64' => base64_encode($bodyField)] : ['body' => $bodyField]),
             ];
             if ($interaction !== null) {
-                $entry['trace'] = $this->traceToArray($interaction);
+                $entry['trace'] = $this->scrubber->redactExact($this->traceToArray($interaction), $secrets);
+            }
+            if ($this->turn !== null && $kind === Cassette::KIND_AGENT) {
+                $entry['turn'] = $this->turn;
             }
             $this->store($entry);
         }
@@ -201,7 +257,7 @@ final class AiVcrClient implements ClientInterface
      */
     public function judgeVerdict(array $payload, callable $live): JudgeVerdict
     {
-        $normalized = $this->normalizer->normalize($payload);
+        $normalized = $this->normalizer->match($this->scrubber->scrubMap($this->normalizer->normalize($payload)));
         $hash = $this->normalizer->hash($normalized);
         $occurrence = $this->occurrences->next(Cassette::KIND_JUDGE, $hash);
 
@@ -241,9 +297,12 @@ final class AiVcrClient implements ClientInterface
     }
 
     /**
+     * The request as the provider parser (or, for other traffic, RequestBody) sees it, normalized and with secrets
+     * redacted. MatchingRules aren't applied yet: the trace still needs fields such as `model`.
+     *
      * @return array{string, ProviderPayloadParserInterface|null, array<string, mixed>}
      */
-    private function classify(string $method, string $uri, string $body): array
+    private function classify(RequestInterface $request, string $uri, string $body): array
     {
         foreach ($this->parsers as $parser) {
             if (!$parser->supports($uri)) {
@@ -257,14 +316,76 @@ final class AiVcrClient implements ClientInterface
                 break;
             }
 
-            return [Cassette::KIND_AGENT, $parser, $payload];
+            return [Cassette::KIND_AGENT, $parser, $this->scrubber->scrubMap($payload)];
         }
+
+        $described = RequestBody::describe($body, $request->getHeaderLine('Content-Type'));
+        $described = is_string($described) ? $this->scrubber->scrubBody($described) : $this->scrubber->scrubData($described);
 
         return [
             Cassette::KIND_RAW,
             null,
-            $this->normalizer->normalizeRaw($method, $this->scrubber->scrubUri($uri), $this->scrubber->scrubBody($body)),
+            $this->scrubber->scrubMap(
+                $this->normalizer->normalizeRaw($request->getMethod(), $this->scrubber->scrubUri($uri), $described),
+            ),
         ];
+    }
+
+    /**
+     * What is hashed, and stored as `normalized_payload`: the payload after MatchingRules, plus the matched headers,
+     * scoped to the current conversation turn if there is one.
+     *
+     * @param array<string, mixed> $payload
+     * @return array<string, mixed>
+     */
+    private function matchPayload(string $kind, array $payload, RequestInterface $request): array
+    {
+        $rules = $this->normalizer->rules();
+        if ($rules->matchHeaders !== []) {
+            $headers = $rules->pickHeaders($this->scrubber->scrubHeaders($request->getHeaders()));
+            if ($headers !== []) {
+                $payload['headers'] = $this->scrubber->scrubValues($headers);
+            }
+        }
+        $payload = $this->normalizer->match($payload);
+
+        return $this->turn !== null && $kind === Cassette::KIND_AGENT ? $this->scopeToTurn($payload) : $payload;
+    }
+
+    /**
+     * Cuts the messages that came before this turn from each prompt list, so earlier replies don't change the hash.
+     * Leading system and developer messages always stay: editing the system prompt must still re-record. Of the rest,
+     * the first request of the turn fixes the cut (everything but its last entry, the new user message); requests
+     * later in the same turn, such as tool-call rounds, keep what was added since. Lists are told apart by their
+     * first entry, so a side call with its own prompt (a classifier, a router) gets its own cut.
+     *
+     * @param array<string, mixed> $payload
+     * @return array<string, mixed>
+     */
+    private function scopeToTurn(array $payload): array
+    {
+        assert($this->turn !== null);
+        foreach (self::PROMPT_KEYS as $key) {
+            $list = $payload[$key] ?? null;
+            if (!is_array($list) || $list === [] || !array_is_list($list)) {
+                continue;
+            }
+            $lead = 0;
+            while ($lead < count($list) && in_array(Payload::get($list[$lead], 'role'), ['system', 'developer'], true)) {
+                $lead++;
+            }
+            $rest = array_slice($list, $lead);
+            if ($rest === []) {
+                continue;
+            }
+            $id = $key . ':' . hash('xxh128', (string) json_encode($list[0]));
+            $base = $this->turnBase[$id] ??= count($rest) - 1;
+            $payload[$key] = [...array_slice($list, 0, $lead), ...array_slice($rest, min($base, count($rest) - 1))];
+        }
+        // OpenAI Responses chains turns server-side; the id changes whenever an earlier turn is re-recorded.
+        unset($payload['previous_response_id']);
+
+        return ['conversation_turn' => $this->turn['conversation'] . '#' . $this->turn['index']] + $payload;
     }
 
     /**
@@ -397,7 +518,7 @@ final class AiVcrClient implements ClientInterface
     {
         $cassette = $this->cassette();
 
-        return CassetteMissException::create(
+        return $this->misses[] = CassetteMissException::create(
             $this->cassettePath,
             $this->testName,
             $kind,

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Axitdev\PhpUnitAiEvals\Assertions\Constraints;
 
+use Axitdev\PhpUnitAiEvals\Assertions\StructuredOutput;
 use LogicException;
 use Opis\JsonSchema\Errors\ErrorFormatter;
 use Opis\JsonSchema\Validator;
@@ -35,7 +36,7 @@ final class MatchesJsonSchemaConstraint extends Constraint
     {
         $data = json_decode(is_string($other) ? $other : '');
         if (json_last_error() !== JSON_ERROR_NONE) {
-            $this->error = 'Not valid JSON: ' . json_last_error_msg();
+            $this->error = StructuredOutput::invalidJsonMessage(is_string($other) ? $other : '', json_last_error_msg());
 
             return false;
         }

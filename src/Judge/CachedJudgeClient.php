@@ -7,7 +7,7 @@ namespace Axitdev\PhpUnitAiEvals\Judge;
 use Axitdev\PhpUnitAiEvals\Vcr\AiVcrClient;
 
 /**
- * Serves verdicts from the cassette; only touches $live (typically a lazy proxy) on a cache miss.
+ * Serves verdicts from the cassette; only touches $live (typically a LazyJudgeClient) on a cache miss.
  *
  * @internal
  */

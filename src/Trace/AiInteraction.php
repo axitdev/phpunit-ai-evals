@@ -7,11 +7,9 @@ namespace Axitdev\PhpUnitAiEvals\Trace;
 final class AiInteraction
 {
     /** @var list<ToolCall> */
-    public private(set) array $toolCalls = [];
+    public readonly array $toolCalls;
 
-    public int $totalTokens {
-        get => $this->promptTokens + $this->completionTokens;
-    }
+    public readonly int $totalTokens;
 
     /**
      * @param array<ToolCall> $toolCalls
@@ -27,5 +25,6 @@ final class AiInteraction
         array $toolCalls = [],
     ) {
         $this->toolCalls = array_values($toolCalls);
+        $this->totalTokens = $promptTokens + $completionTokens;
     }
 }

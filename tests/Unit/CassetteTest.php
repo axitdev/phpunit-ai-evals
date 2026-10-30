@@ -52,7 +52,7 @@ final class CassetteTest extends TestCase
 
         self::assertStringContainsString("\n    ", $json);
         self::assertStringContainsString('ünï/code', $json);
-        self::assertStringContainsString('"version": "1.0"', $json);
+        self::assertStringContainsString('"version": "1.1"', $json);
         self::assertEquals($c, Cassette::fromJson($json));
     }
 
@@ -89,8 +89,8 @@ final class CassetteTest extends TestCase
 
         self::assertStringContainsString('semantic_hash abc', $e->getMessage());
         self::assertStringContainsString("\nCassette: /c/x.json\n", $e->getMessage());
-        self::assertStringContainsString('-             "content": "refund 404 café/1"', $e->getMessage(), 'unicode and slashes stay readable');
-        self::assertStringContainsString('+             "content": "refund 405 café/2"', $e->getMessage());
+        self::assertStringContainsString('Differs from the closest recorded interaction in: messages.0.content', $e->getMessage());
+        self::assertStringContainsString("  messages.0.content\n    recorded: \"refund 404 café/1\"\n    current:  \"refund 405 café/2\"", $e->getMessage(), 'unicode and slashes stay readable');
         self::assertStringContainsString('AI_EVAL_MODE=record vendor/bin/phpunit --filter ' . escapeshellarg('RefundTest::testRefund\b'), $e->getMessage());
     }
 
@@ -99,14 +99,33 @@ final class CassetteTest extends TestCase
         $e = CassetteMissException::create('/c.json', 't', 'agent_call', 'abc', 2, [], null, true);
 
         self::assertStringContainsString('not occurrence #2', $e->getMessage());
-        self::assertStringNotContainsString('Diff against', $e->getMessage());
+        self::assertStringNotContainsString('Differs from', $e->getMessage());
     }
 
-    public function testDiffOfReorderedLines(): void
+    public function testDiffOfReorderedFields(): void
     {
         $e = CassetteMissException::create('/c.json', 't', 'agent_call', 'abc', 0, ['b' => 2, 'a' => 1], ['a' => 1, 'b' => 2], false);
 
-        self::assertStringContainsString("(- recorded, + current):\n(payloads differ only in line order)\n", $e->getMessage());
+        self::assertStringContainsString('same fields and values; only their order differs', $e->getMessage());
+    }
+
+    public function testDiffNamesAddedRemovedAndNestedFields(): void
+    {
+        $e = CassetteMissException::create(
+            '/c.json',
+            't',
+            'agent_call',
+            'abc',
+            0,
+            ['model' => 'gpt-6', 'temperature' => 0.2, 'messages' => [['role' => 'user', 'content' => 'a'], ['role' => 'user', 'content' => 'b']]],
+            ['model' => 'gpt-5', 'tools' => [['name' => 'x']], 'messages' => [['role' => 'user', 'content' => 'a']]],
+            false,
+        );
+
+        self::assertStringContainsString('Differs from the closest recorded interaction in: model, tools, messages.1, temperature', $e->getMessage());
+        self::assertStringContainsString("  temperature\n    recorded: (absent)\n    current:  0.2", $e->getMessage());
+        self::assertStringContainsString("  tools\n    recorded: [{\"name\":\"x\"}]\n    current:  (absent)", $e->getMessage());
+        self::assertStringContainsString("  messages.1\n    recorded: (absent)\n    current:  {\"role\":\"user\",\"content\":\"b\"}", $e->getMessage());
     }
 
     public function testOtherMajorCassetteVersionsAreRefusedAndMissingVersionIsAccepted(): void
@@ -115,7 +134,7 @@ final class CassetteTest extends TestCase
         self::assertSame('t', Cassette::fromJson('{"version": "1.7", "test": "t"}')->test);
 
         $this->expectException(\UnexpectedValueException::class);
-        $this->expectExceptionMessage('Cassette format 2.0 is not supported (this version reads 1.0)');
+        $this->expectExceptionMessage('Cassette format 2.0 is not supported (this version reads 1.1)');
         Cassette::fromJson('{"version": "2.0", "test": "t"}');
     }
 

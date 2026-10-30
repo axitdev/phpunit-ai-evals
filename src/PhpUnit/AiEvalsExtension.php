@@ -9,6 +9,7 @@ use Axitdev\PhpUnitAiEvals\PhpUnit\Subscribers\PruneCassettesSubscriber;
 use Axitdev\PhpUnitAiEvals\PhpUnit\Subscribers\ReportSubscriber;
 use Axitdev\PhpUnitAiEvals\PhpUnit\Subscribers\TestFinishedSubscriber;
 use Axitdev\PhpUnitAiEvals\PhpUnit\Subscribers\TestPreparationStartedSubscriber;
+use Axitdev\PhpUnitAiEvals\Vcr\MatchingRules;
 use Axitdev\PhpUnitAiEvals\Vcr\SecretScrubber;
 use Axitdev\PhpUnitAiEvals\Vcr\VcrMode;
 use InvalidArgumentException;
@@ -25,7 +26,19 @@ final class AiEvalsExtension implements Extension
         TestContextRegistry::configure(
             $parameters->has('cassettesPath') ? $this->resolvePath($parameters->get('cassettesPath'), $configuration) : null,
             $parameters->has('mode') ? VcrMode::parse($parameters->get('mode'), 'AiEvalsExtension "mode" parameter') : null,
-            new SecretScrubber($this->parseList($parameters, 'redactHeaders'), $this->parseList($parameters, 'redactKeys')),
+            new SecretScrubber(
+                $this->parseList($parameters, 'redactHeaders'),
+                $this->parseList($parameters, 'redactKeys'),
+                // Patterns may contain commas, so they are separated by whitespace; XML turns newlines in attribute values
+                // into spaces anyway. Write a space inside a pattern as \s or \x20.
+                $this->parseList($parameters, 'redactPatterns', '/\s+/'),
+            ),
+            new MatchingRules(
+                $this->parseList($parameters, 'ignoreFields'),
+                $this->parseNormalizeFields($parameters),
+                $this->parseList($parameters, 'matchHeaders'),
+                $this->parseList($parameters, 'matchFields'),
+            ),
         );
 
         $facade->registerSubscribers(
@@ -57,13 +70,36 @@ final class AiEvalsExtension implements Extension
     /**
      * @return list<string>
      */
-    private function parseList(ParameterCollection $parameters, string $name): array
+    private function parseList(ParameterCollection $parameters, string $name, string $separator = '/,/'): array
     {
         if (!$parameters->has($name)) {
             return [];
         }
 
-        return array_values(array_filter(array_map(trim(...), explode(',', $parameters->get($name))), static fn(string $v): bool => $v !== ''));
+        return array_values(array_filter(
+            array_map(trim(...), preg_split($separator, $parameters->get($name)) ?: []),
+            static fn(string $v): bool => $v !== '',
+        ));
+    }
+
+    /**
+     * `normalizeFields="metadata.request_id, user=<USER>"`: a bare path gets the default placeholder.
+     *
+     * @return array<int|string, string>
+     */
+    private function parseNormalizeFields(ParameterCollection $parameters): array
+    {
+        $out = [];
+        foreach ($this->parseList($parameters, 'normalizeFields') as $item) {
+            if (str_contains($item, '=')) {
+                [$path, $placeholder] = array_map(trim(...), explode('=', $item, 2));
+                $out[$path] = $placeholder;
+            } else {
+                $out[] = $item;
+            }
+        }
+
+        return $out;
     }
 
     /**
