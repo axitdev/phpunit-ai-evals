@@ -60,9 +60,34 @@ final class SafetyTest extends TestCase
 
     public function testOrdinaryTextIsLeftAlone(): void
     {
-        $text = 'Ask the sk-team about task-12345 and the risk of tokens: 1200 prompt, 300 completion.';
+        $text = 'Ask the sk-team about task-12345 and the risk of tokens: 1200 prompt, 300 completion. '
+            . 'Basic information and Basic arithmetic; the Bearer of-bad-news; sk-learn-compatible-classifier-pipelines.';
 
         self::assertSame($text, (new SecretScrubber())->scrubText($text));
+    }
+
+    public function testBasicCredentialsAreRedactedEvenWithoutDigits(): void
+    {
+        $scrubber = new SecretScrubber();
+
+        self::assertSame('Basic [REDACTED]', $scrubber->scrubText('Basic dGVzdDp0ZXN0'));
+        self::assertSame('Basic [REDACTED]', $scrubber->scrubText('Basic YWxhZGRpbjpvcGVuc2VzYW1l'));
+        self::assertSame(['abc.def-123_456', 'dGVzdDp0ZXN0'], $scrubber->secretsIn('Bearer abc.def-123_456', 'Basic dGVzdDp0ZXN0 and prose'));
+    }
+
+    public function testResponsesKeepLookalikesAndLoseOnlyTheRequestsOwnSecrets(): void
+    {
+        $sent = 'sk-proj-' . str_repeat('Aa1', 12);
+        $lookalike = 'sk-proj-' . str_repeat('Bb2', 12);
+        $answer = "Basic arithmetic first. Your key $sent is set; an example key looks like $lookalike.";
+        $payload = ['model' => 'm', 'messages' => [['role' => 'user', 'content' => "Use $sent"]]];
+
+        $this->vcr(VcrMode::Record, new FakeClient(FakeClient::json(FakeClient::openAiReply($answer))))
+            ->sendRequest(FakeClient::request(self::URI, $payload));
+        $replayed = (string) $this->vcr(VcrMode::Replay, new FakeClient())->sendRequest(FakeClient::request(self::URI, $payload))->getBody();
+
+        self::assertStringNotContainsString($sent, $replayed);
+        self::assertStringContainsString('Basic arithmetic first. Your key [REDACTED] is set; an example key looks like ' . $lookalike, $replayed);
     }
 
     public function testExtraPatternsAndInvalidOnes(): void
@@ -121,6 +146,20 @@ final class SafetyTest extends TestCase
             self::assertStringStartsWith('1 request(s) missed the cassette in replay mode, and the code under test caught the error', $e->getMessage());
             self::assertStringContainsString('No recorded agent_call', $e->getMessage());
         }
+    }
+
+    public function testAllowCassetteMissesSilencesTheGuard(): void
+    {
+        $vcr = $this->wrapHttpClient(new FakeClient());
+        $this->allowCassetteMisses();
+        try {
+            $vcr->sendRequest(FakeClient::request(self::URI, ['model' => 'm', 'messages' => [['role' => 'user', 'content' => 'x']]]));
+        } catch (CassetteMissException) {
+            // the application under test would show its fallback here
+        }
+
+        $this->failOnSwallowedCassetteMisses();
+        self::assertCount(1, $vcr->misses());
     }
 
     private function vcr(VcrMode $mode, FakeClient $inner): AiVcrClient

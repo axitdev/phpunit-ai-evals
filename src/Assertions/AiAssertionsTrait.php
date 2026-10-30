@@ -61,6 +61,8 @@ trait AiAssertionsTrait
     /** @var array{string, int}|null conversation name and turn being answered */
     private ?array $aiActiveTurn = null;
 
+    private bool $aiCassetteMissesAllowed = false;
+
     #[Before]
     protected function resetAiEvalState(): void
     {
@@ -70,6 +72,16 @@ trait AiAssertionsTrait
         $this->aiOccurrenceCounters = [];
         $this->aiVcrClients = [];
         $this->aiActiveTurn = null;
+        $this->aiCassetteMissesAllowed = false;
+    }
+
+    /**
+     * For a test about what the application does when a recording is missing, e.g. that it shows a fallback answer:
+     * replay misses that the code catches then don't fail the test.
+     */
+    protected function allowCassetteMisses(): void
+    {
+        $this->aiCassetteMissesAllowed = true;
     }
 
     /**
@@ -83,13 +95,14 @@ trait AiAssertionsTrait
         $clients = $this->aiVcrClients;
         $this->aiVcrClients = [];
         $status = $this->status();
-        if ((!$status->isSuccess() && !$status->isUnknown()) || $this->aiExpectsCassetteMiss()) {
+        if ((!$status->isSuccess() && !$status->isUnknown()) || $this->aiCassetteMissesAllowed || $this->aiExpectsCassetteMiss()) {
             return; // the miss, or something else, already failed the test; or the test is about the miss
         }
         $misses = array_merge([], ...array_map(static fn(AiVcrClient $c): array => $c->misses(), $clients));
         if ($misses !== []) {
             throw new AssertionFailedError(sprintf(
-                "%d request(s) missed the cassette in replay mode, and the code under test caught the error instead of failing.\n\n%s",
+                "%d request(s) missed the cassette in replay mode, and the code under test caught the error instead of failing.\n"
+                . "If the test is about that, call \$this->allowCassetteMisses().\n\n%s",
                 count($misses),
                 $misses[0]->getMessage(),
             ));

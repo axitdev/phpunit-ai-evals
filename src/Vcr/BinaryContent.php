@@ -13,13 +13,16 @@ namespace Axitdev\PhpUnitAiEvals\Vcr;
  */
 final class BinaryContent
 {
-    public const DEFAULT_MIME = 'application/octet-stream';
+    private const DEFAULT_MIME = 'application/octet-stream';
 
     /** A `data:` URI with a base64 payload, standard or URL-safe alphabet. */
-    public const DATA_URI = '#data:([\w.+-]+/[\w.+-]+)(?:;[\w.+-]+=[\w.+-]+)*;base64,([A-Za-z0-9+/=_-]+)#';
+    private const DATA_URI = '#data:([\w.+-]+/[\w.+-]+)(?:;[\w.+-]+=[\w.+-]+)*;base64,([A-Za-z0-9+/=_-]+)#';
 
     /** Bare base64 shorter than this is left alone: it is more likely an id or a short token than a file. */
     private const MIN_BASE64_LENGTH = 64;
+
+    /** OpenAI input_audio names only the container format, e.g. `"format": "wav"`. */
+    private const AUDIO_FORMATS = ['wav', 'mp3', 'flac', 'opus', 'aac', 'pcm16', 'm4a', 'ogg', 'webm'];
 
     /** Sibling keys that name the MIME type of a base64 `data` field (Anthropic, Gemini, generic). */
     private const MIME_KEYS = ['media_type', 'mediaType', 'mime_type', 'mimeType', 'content_type', 'contentType'];
@@ -75,11 +78,6 @@ final class BinaryContent
         if (!is_string($data) || str_starts_with($data, '<binary ')) {
             return $node;
         }
-        $explicit = ($node['type'] ?? null) === 'base64';
-        if (!$explicit && !self::looksLikeBase64($data)) {
-            return $node;
-        }
-
         $mime = null;
         foreach (self::MIME_KEYS as $key) {
             if (is_string($node[$key] ?? null)) {
@@ -87,9 +85,14 @@ final class BinaryContent
                 break;
             }
         }
-        // OpenAI input_audio names only the container format, e.g. `"format": "wav"`.
-        if ($mime === null && is_string($node['format'] ?? null) && preg_match('/^[a-z0-9]+$/', $node['format']) === 1) {
-            $mime = 'audio/' . $node['format'];
+        $format = $node['format'] ?? null;
+        if ($mime === null && is_string($format) && in_array(strtolower($format), self::AUDIO_FORMATS, true)) {
+            $mime = 'audio/' . strtolower($format);
+        }
+        // Only a `data` field labelled as binary counts: an id or hash that happens to be long base64 stays readable.
+        $explicit = ($node['type'] ?? null) === 'base64';
+        if (!$explicit && ($mime === null || !self::looksLikeBase64($data))) {
+            return $node;
         }
         $node['data'] = self::placeholder(self::decode($data), $mime);
 

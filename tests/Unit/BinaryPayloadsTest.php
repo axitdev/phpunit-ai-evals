@@ -76,6 +76,18 @@ final class BinaryPayloadsTest extends TestCase
         self::assertSame('abc123', Payload::get($out, 'messages', 0, 'content', 0, 'data'));
     }
 
+    public function testLongIdsInDataFieldsWithoutAMimeTypeStayReadable(): void
+    {
+        $hash = hash('sha256', 'order 404');
+        $out = (new PromptNormalizer())->normalize(['messages' => [['content' => [
+            ['data' => $hash],
+            ['data' => $hash . $hash, 'format' => 'json'],
+        ]]]]);
+
+        self::assertSame($hash, Payload::get($out, 'messages', 0, 'content', 0, 'data'));
+        self::assertSame($hash . $hash, Payload::get($out, 'messages', 0, 'content', 1, 'data'));
+    }
+
     public function testRequestWithDataUriRecordsAndReplaysWithoutTheBytes(): void
     {
         $png = self::png();

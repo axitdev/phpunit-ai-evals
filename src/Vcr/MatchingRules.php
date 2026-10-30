@@ -68,11 +68,6 @@ final class MatchingRules
         );
     }
 
-    public function isEmpty(): bool
-    {
-        return $this->ignoreFields === [] && $this->normalizeFields === [] && $this->matchHeaders === [] && $this->matchFields === [];
-    }
-
     /**
      * @param array<string, mixed> $payload
      * @return array<string, mixed>

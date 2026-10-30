@@ -120,6 +120,17 @@ final class MatchingRulesTest extends TestCase
         $this->vcr(VcrMode::Replay, $rules)->sendRequest($raw('noon', 't1', 2));
     }
 
+    public function testMatchingAllOfGenerationConfigKeepsSamplingSettings(): void
+    {
+        $payload = ['contents' => [['parts' => [['text' => 'hi']]]], 'generationConfig' => ['temperature' => 0.2, 'responseMimeType' => 'application/json']];
+
+        self::assertSame(['responseMimeType' => 'application/json'], Payload::get((new PromptNormalizer())->normalize($payload), 'generationConfig'));
+        self::assertSame(
+            ['responseMimeType' => 'application/json', 'temperature' => 0.2],
+            Payload::get((new PromptNormalizer(rules: new MatchingRules(matchFields: ['generationConfig'])))->normalize($payload), 'generationConfig'),
+        );
+    }
+
     public function testAttributeBuildsRules(): void
     {
         $rules = (new AiVcr(ignoreFields: ['model'], normalizeFields: ['user'], matchHeaders: ['X-A'], matchFields: ['seed']))->matchingRules();

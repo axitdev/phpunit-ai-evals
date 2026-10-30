@@ -84,6 +84,30 @@ final class ExtensionEndToEndTest extends TestCase
         self::assertStringContainsString('Judge Evals:  2 passed (Avg Score: 0.90)', $second);
     }
 
+    public function testGlobalMatchingAndRedactionParametersApply(): void
+    {
+        // Patterns on separate lines, as in the docs: XML turns the newline into a space.
+        $this->writeConfig('<parameter name="cassettesPath" value="cassettes"/>'
+            . "<parameter name=\"redactPatterns\" value=\"/gpt-6-luna/\n    /TENANT-[A-Z]+/\"/>"
+            . '<parameter name="ignoreFields" value="messages.*.role"/>'
+            . '<parameter name="normalizeFields" value="messages.*.content=&lt;PROMPT&gt;"/>');
+
+        [$code, $output] = $this->runPhpunit();
+        self::assertSame(0, $code, $output);
+
+        $file = (glob($this->tmp . '/cassettes/*.json') ?: [''])[0];
+        $agentCalls = array_values(array_filter(
+            Payload::maps(Payload::get(json_decode((string) file_get_contents($file), true), 'interactions')),
+            static fn(array $i): bool => ($i['kind'] ?? null) === 'agent_call',
+        ));
+        // Both data-provider cases normalize to the same request, so they share one recording.
+        self::assertCount(1, $agentCalls);
+        self::assertSame(
+            ['messages' => [['content' => '<PROMPT>']], 'model' => '[REDACTED]'],
+            Payload::get($agentCalls[0], 'request', 'normalized_payload'),
+        );
+    }
+
     public function testReportIsWrittenAndComparedWithBaseline(): void
     {
         $this->writeConfig('<parameter name="cassettesPath" value="cassettes"/>'

@@ -39,7 +39,7 @@ Common auth headers and credential fields are redacted out of the box (the list 
 <parameter name="redactKeys" value="session_id, signature"/> <!-- query parameters, form fields and JSON keys -->
 ```
 
-Credentials are also recognised by their shape wherever they appear (see [Secrets](how-it-works.md#secrets)). For your own token formats, add regular expressions, one per line:
+Credentials are also recognised by their shape (see [Secrets](how-it-works.md#secrets)). For your own token formats, add regular expressions separated by whitespace (write a space inside a pattern as `\s` or `\x20`). Lines work too, since XML turns the line break into a space:
 
 ```xml
 <parameter name="redactPatterns" value="/acme_live_[0-9a-f]{32}/

@@ -29,8 +29,9 @@ final class AiEvalsExtension implements Extension
             new SecretScrubber(
                 $this->parseList($parameters, 'redactHeaders'),
                 $this->parseList($parameters, 'redactKeys'),
-                // Patterns may contain commas, so they are separated by newlines (or `|||`) instead.
-                $this->parseList($parameters, 'redactPatterns', '/\R|\|\|\|/'),
+                // Patterns may contain commas, so they are separated by whitespace; XML turns newlines in attribute values
+                // into spaces anyway. Write a space inside a pattern as \s or \x20.
+                $this->parseList($parameters, 'redactPatterns', '/\s+/'),
             ),
             new MatchingRules(
                 $this->parseList($parameters, 'ignoreFields'),

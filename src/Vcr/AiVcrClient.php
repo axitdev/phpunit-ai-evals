@@ -211,8 +211,11 @@ final class AiVcrClient implements ClientInterface
             if ($kind === Cassette::KIND_RAW && !$binary) {
                 $bodyField = is_array($bodyField) ? $this->scrubber->scrubData($bodyField) : $this->scrubber->scrubBody($bodyField);
             }
+            // The response is replayed, so it isn't scrubbed by shape (a lookalike in a model answer would change what
+            // the test sees); only credentials this request carried are removed, in case the response echoes one.
+            $secrets = $this->scrubber->secretsIn($uri, $body, ...array_merge([], ...array_values($request->getHeaders())));
             if (!$binary) {
-                $bodyField = $this->scrubber->scrubValues($bodyField);
+                $bodyField = $this->scrubber->redactExact($bodyField, $secrets);
             }
             $entry = [
                 'semantic_hash' => $hash,
@@ -228,16 +231,16 @@ final class AiVcrClient implements ClientInterface
                 ],
                 'response' => [
                     'status' => $status,
-                    'headers' => $this->scrubber->scrubHeaders(array_filter(
+                    'headers' => $this->scrubber->redactExact($this->scrubber->scrubHeaders(array_filter(
                         $live->getHeaders(),
                         static fn(string $name): bool => !in_array(strtolower($name), self::DROPPED_RESPONSE_HEADERS, true),
                         ARRAY_FILTER_USE_KEY,
-                    )),
+                    ), byShape: false), $secrets),
                     'is_stream' => $isStream,
                 ] + ($binary ? ['body_base64' => base64_encode($bodyField)] : ['body' => $bodyField]),
             ];
             if ($interaction !== null) {
-                $entry['trace'] = $this->scrubber->scrubValues($this->traceToArray($interaction));
+                $entry['trace'] = $this->scrubber->redactExact($this->traceToArray($interaction), $secrets);
             }
             if ($this->turn !== null && $kind === Cassette::KIND_AGENT) {
                 $entry['turn'] = $this->turn;

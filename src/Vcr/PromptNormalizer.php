@@ -68,7 +68,8 @@ final class PromptNormalizer
             is_array($payload['generationConfig'] ?? null) ? $payload['generationConfig'] : [],
             array_flip(self::GEMINI_SEMANTIC_CONFIG),
         );
-        if ($config !== []) {
+        // Unless generationConfig was asked for as a whole with matchFields.
+        if ($config !== [] && !in_array('generationConfig', $this->rules->matchFields, true)) {
             $semantic['generationConfig'] = $config;
         }
 

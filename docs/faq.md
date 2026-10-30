@@ -38,7 +38,7 @@ If the date is the point of the prompt ("Is 2025-12-25 a holiday?"), turn the pl
 
 ## Are cassettes safe to commit?
 
-They contain your prompts and the model's answers in full. API keys, cookies, auth headers, account IDs and credentials in URLs are replaced with `[REDACTED]` before anything is written, and so are credential-shaped values (bearer tokens, `sk-` keys, JWTs and the like) anywhere, prompts included. You can add your own header names, field names and patterns. Uploaded files and inline images are stored as a hash, size and MIME type, never as bytes. Other personal data in prompts isn't scrubbed. See [Secrets](how-it-works.md#secrets).
+They contain your prompts and the model's answers in full. API keys, cookies, auth headers, account IDs and credentials in URLs are replaced with `[REDACTED]` before anything is written, and so are credential-shaped values (bearer tokens, `sk-` keys, JWTs and the like) anywhere in the request, prompts included. A response loses any credential its request carried, should the model echo it, but is otherwise stored as received. You can add your own header names, field names and patterns. Uploaded files and inline images are stored as a hash, size and MIME type, never as bytes. Other personal data in prompts isn't scrubbed. See [Secrets](how-it-works.md#secrets).
 
 ## The same test sends the same prompt twice. Does that work?
 

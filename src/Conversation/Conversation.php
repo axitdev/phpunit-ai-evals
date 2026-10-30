@@ -41,14 +41,6 @@ final class Conversation
     }
 
     /**
-     * The user message being answered, or the last one once it has a reply.
-     */
-    public function lastUserMessage(): string
-    {
-        return $this->pending ?? ($this->turns === [] ? '' : $this->turns[count($this->turns) - 1]->message);
-    }
-
-    /**
      * @return list<TurnResult>
      */
     public function turns(): array

@@ -6,15 +6,15 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Added
 - PHP 8.3 support. PHP 8.3 runs with PHPUnit 12.5; PHPUnit 13 still needs PHP 8.4. CI tests PHP 8.3, 8.4 and 8.5, always in replay-only mode.
-- Binary and multipart requests: images, audio and files sent as data URIs, base64 fields (Anthropic, Gemini `inlineData`, OpenAI `input_audio`), multipart uploads or raw binary bodies are matched and stored as `sha256`, `size` and `mime`, never as bytes. Works with Laravel `Http::attach()` and PSR-7 multipart streams.
+- Binary and multipart requests: images, audio and files sent as data URIs, base64 fields with a MIME type (Anthropic, Gemini `inlineData`, OpenAI `input_audio`), multipart uploads or raw binary bodies are matched and stored as `sha256`, `size` and `mime`, never as bytes. Works with Laravel `Http::attach()` and PSR-7 multipart streams.
 - Configurable request matching: `ignoreFields`, `normalizeFields`, `matchHeaders` and `matchFields`, on `#[AiVcr]` per class or test and as extension parameters for the whole suite. Fields are dot paths with `*` wildcards.
 - `CassetteMissException` names each field that differs from the closest recording, with both values, instead of a line diff.
 - Structured-output assertions: `assertScoreAtLeast()`, `assertScoreBetween()` and `assertFieldIn()` on dot paths or JSON Pointers. They, and `assertMatchesJsonSchema()`, accept an `AiInteraction` or default to the last model answer, and explain invalid JSON (empty output, a Markdown fence, text around the JSON).
 - `runConversation()` with `Turn::user()` for multi-turn evals: assertions after every turn with the full history, and each turn cassetted on its own so editing one turn re-records only that turn.
 - `FakesAiHttp::fakeAiHttp()` for Laravel: replays through `Http::fake()`, and records by passing calls through to the provider. Replay mode also prevents stray requests.
 - `assertSemanticallySimilar()`, `assertVariantsMatchRubric()` and `assertVariantsSemanticallySimilar()`. Judge prompts now grade meaning in any language, and variant failures list each failing variant with its score and reason.
-- Credential-shaped values (bearer tokens, `sk-` and other provider keys, AWS key IDs, GitHub/Slack tokens, JWTs) are redacted anywhere in cassettes, prompts included, before hashing. Extend with the `redactPatterns` extension parameter.
-- A replay miss that the code under test catches and swallows still fails the test.
+- Credential-shaped values (bearer tokens, `sk-` and other provider keys, AWS key IDs, GitHub/Slack tokens, JWTs) are redacted anywhere in a request, prompts included, before hashing; responses, which are replayed, lose exactly the credentials their request carried. Extend with the whitespace-separated `redactPatterns` extension parameter.
+- A replay miss that the code under test catches and swallows still fails the test; `allowCassetteMisses()` opts a test out.
 
 ### Changed
 - Cassette format 1.1. 1.0 cassettes still load, but some requests hash differently and need re-recording: requests containing base64 images, audio or files, `raw_http` requests with JSON or multipart bodies, and judge verdicts (the judge prompts changed). Re-record them with `AI_EVAL_MODE=record`, then remove the old entries with `AI_EVAL_PRUNE=1`.
