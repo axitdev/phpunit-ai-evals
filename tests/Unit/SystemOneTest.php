@@ -402,10 +402,36 @@ final class SystemOneTest extends TestCase
         self::assertSame('', JudgeSettings::resolve()->apiKey, 'TYPESAFE_API_KEY must not leak to another host');
         self::assertSame(JudgeProvider::OpenAiCompatible, JudgeSettings::resolve(new AiJudgeConfig(provider: 'openai'))->provider, 'the attribute wins');
 
+        putenv('AI_EVAL_JUDGE_PROVIDER');
+        putenv('AI_EVAL_JUDGE_BASE_URI');
         putenv('AI_EVAL_JUDGE_PROVIDER=jev');
         $this->expectException(InvalidArgumentException::class);
         $this->expectExceptionMessage('Unknown judge provider "jev"; expected one of: openai, system-one.');
         JudgeSettings::resolve();
+    }
+
+    public function testAnAttributeThatSwitchesProviderDoesNotInheritTheEnvironmentJudge(): void
+    {
+        // The environment configures an Anthropic judge; one test class switches to System One.
+        putenv('AI_EVAL_JUDGE_BASE_URI=https://api.anthropic.com/v1');
+        putenv('AI_EVAL_JUDGE_MODEL=claude-haiku-5-5');
+        putenv('AI_EVAL_JUDGE_API_KEY=sk-ant-secret');
+        putenv('TYPESAFE_API_KEY=ts');
+
+        $switched = JudgeSettings::resolve(new AiJudgeConfig(provider: 'system-one'));
+        self::assertSame(
+            [JudgeProvider::SystemOne, 'https://api.typesafe.ai/v1', 'jev-latest', 'ts'],
+            [$switched->provider, $switched->baseUri, $switched->model, $switched->apiKey],
+            'the Anthropic key, host and model stay with the Anthropic judge',
+        );
+
+        $same = JudgeSettings::resolve(new AiJudgeConfig(provider: 'openai'));
+        self::assertSame(['https://api.anthropic.com/v1', 'claude-haiku-5-5', 'sk-ant-secret'], [$same->baseUri, $same->model, $same->apiKey], 'naming the environment\'s own provider keeps its settings');
+
+        putenv('AI_EVAL_JUDGE_PROVIDER=system-one');
+        $back = JudgeSettings::resolve(new AiJudgeConfig(provider: 'openai'));
+        self::assertSame(['https://api.openai.com/v1', 'gpt-6-luna', ''], [$back->baseUri, $back->model, $back->apiKey], 'and the other way round');
+        self::assertSame('sk-ant-secret', JudgeSettings::resolve()->apiKey, 'without an attribute the environment judge is used as configured');
     }
 
     public function testRubricListsAreDescribedAndValidated(): void

@@ -10,6 +10,7 @@ All notable changes to this project are documented here. The format follows [Kee
 - `assertBrierScoreAtMost()` to check that predicted probabilities are calibrated over a dataset.
 - A System One judge (`AI_EVAL_JUDGE_PROVIDER=system-one` or `#[AiJudgeConfig(provider: 'system-one')]`): one yes/no question per rubric criterion or per sentence of the output, scored by the weakest answer.
 - `assertMatchesRubric()` takes a list of criteria that must all hold.
+- `AI_EVAL_JUDGE_BASE_URI`, `AI_EVAL_JUDGE_MODEL` and `AI_EVAL_JUDGE_API_KEY` apply only to the environment's judge provider; an attribute that picks another provider uses that provider's defaults and key.
 
 ### Changed
 - **Breaking:** `JudgeClientInterface::judge()` takes a `JudgeRequest` instead of two prompts, and judges implement `cachePayload()`. Prompt building moved into the LLM judge.

@@ -68,6 +68,8 @@ By default the judge talks the OpenAI Chat Completions protocol, through the HTT
 | JSON mode (`response_format: json_object`) | `AI_EVAL_JUDGE_JSON_MODE` (`0`, `false`, `off` or `no` turns it off) | on |
 | Temperature | `AI_EVAL_JUDGE_TEMPERATURE` | not sent |
 
+`AI_EVAL_JUDGE_BASE_URI`, `AI_EVAL_JUDGE_MODEL` and `AI_EVAL_JUDGE_API_KEY` belong to the provider set in the environment. A test whose `#[AiJudgeConfig(provider: ...)]` picks another provider gets that provider's defaults instead, so one vendor's key is never sent to another.
+
 Temperature isn't sent unless you set it, because current models reject it: Claude 5 refuses it outright, and the gpt-6 models only accept their default. Replays are deterministic either way, since verdicts are saved. Re-recorded verdicts aren't, so for models that accept a temperature, such as local ones, set it to `0` to have a re-record grade the same answer the same way.
 
 When the judge hits a rate limit (429) or a server error, it retries twice and respects `Retry-After` up to 30 seconds.
