@@ -25,6 +25,8 @@ final class SystemOneJudgeClient implements JudgeClientInterface
 
     private const int REASON_ITEMS = 3;
 
+    private const int REASON_LABEL_WIDTH = 120;
+
     private readonly JudgeHttp $http;
 
     public function __construct(
@@ -44,7 +46,7 @@ final class SystemOneJudgeClient implements JudgeClientInterface
         $claims = [];
         foreach (preg_split('/\R+/u', $output) ?: [] as $line) {
             $line = (string) preg_replace('/^\s*(?:[-*•>]+|\d+[.)])\s*/u', '', $line);
-            foreach (preg_split('/(?<=[.!?])\s+(?=\S)/u', trim($line)) ?: [] as $sentence) {
+            foreach (preg_split('/(?<=[.!?])\s+(?=\S)/u', $line) ?: [] as $sentence) {
                 $sentence = trim($sentence);
                 if (preg_match('/[\p{L}\p{N}]/u', $sentence) === 1) {
                     $claims[] = $sentence;
@@ -91,30 +93,31 @@ final class SystemOneJudgeClient implements JudgeClientInterface
         $body = $this->http->postJson(rtrim($this->settings->baseUri, '/') . '/systemone', $this->settings->apiKey, $payload);
         $response = Payload::map(json_decode($body, true));
 
-        $probabilities = [];
+        $answers = [];
         foreach ($questions as $id => $question) {
             $value = Payload::get($response, 'answers', $id, 'noul');
             if ((!is_int($value) && !is_float($value)) || $value < 0 || $value > 1) {
                 throw new UnexpectedValueException(sprintf('System One answer has no probability between 0 and 1 for "%s": %s', $id, mb_substr($body, 0, 300)));
             }
-            $label = Payload::string(Payload::get($question, 'instructions', 'claim') ?? Payload::get($question, 'instructions'));
-            $probabilities[$label] = min($probabilities[$label] ?? 1.0, (float) $value);
+            $label = Payload::get($question, 'instructions', 'claim') ?? Payload::get($question, 'instructions');
+            $answers[] = [Payload::string($label), (float) $value];
         }
-        asort($probabilities);
+        // Stable, so equal probabilities keep the order they were asked in.
+        usort($answers, static fn(array $a, array $b): int => $a[1] <=> $b[1]);
 
-        return new JudgeVerdict((float) reset($probabilities), self::reason($probabilities, Payload::string($response['model'] ?? null)));
+        return new JudgeVerdict($answers[0][1], self::reason($answers, Payload::string($response['model'] ?? null)));
     }
 
     /**
-     * @param array<string, float> $probabilities ascending
+     * @param non-empty-list<array{string, float}> $answers label and P(yes), lowest first
      */
-    private static function reason(array $probabilities, string $release): string
+    private static function reason(array $answers, string $release): string
     {
         $items = [];
-        foreach (array_slice($probabilities, 0, self::REASON_ITEMS, true) as $label => $p) {
-            $items[] = sprintf('"%s" %.2f', mb_strimwidth((string) $label, 0, 120, '…'), $p);
+        foreach (array_slice($answers, 0, self::REASON_ITEMS) as [$label, $p]) {
+            $items[] = sprintf('"%s" %.2f', mb_strimwidth($label, 0, self::REASON_LABEL_WIDTH, '…'), $p);
         }
-        $more = count($probabilities) - count($items);
+        $more = count($answers) - count($items);
 
         return sprintf(
             'P(yes) per question, lowest first: %s%s%s',

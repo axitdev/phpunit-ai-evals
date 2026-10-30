@@ -16,6 +16,7 @@ All notable changes to this project are documented here. The format follows [Kee
 - Judges set with `useJudgeClient()` are now cached in the cassette like the built-in ones; `useJudgeClient($judge, cache: false)` restores the old behaviour.
 - Verdicts are hashed on every key of the judge's cache payload. The built-in LLM judge sends the same payload as before, so existing cassettes still replay.
 - The LLM judge no longer needs a lazy proxy: PSR-17 factories are looked up on the first live request.
+- `JudgePrompts::rubric()` takes a list of criteria, and the test-only `Psr18JudgeClient::retryDelay()` is gone (both were internal).
 
 ## [0.0.2] - 2026-10-24
 

@@ -44,15 +44,11 @@ final class JudgePrompts
     /**
      * One criterion is written as is, so its prompt (and cached verdict) is the same as before criteria lists existed.
      *
-     * @param string|list<string> $rubric
+     * @param list<string> $criteria never empty: JudgeRequest::rubric() rejects that
      */
-    public static function rubric(string|array $rubric, string $output): string
+    public static function rubric(array $criteria, string $output): string
     {
-        $text = match (true) {
-            is_string($rubric) => $rubric,
-            count($rubric) === 1 => $rubric[0],
-            default => "All of the following must hold:\n- " . implode("\n- ", $rubric),
-        };
+        $text = count($criteria) === 1 ? $criteria[0] : "All of the following must hold:\n- " . implode("\n- ", $criteria);
 
         return "RUBRIC:\n" . $text . "\n\n" . self::output($output);
     }

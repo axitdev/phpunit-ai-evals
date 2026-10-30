@@ -24,14 +24,6 @@ final class Psr18JudgeClient implements JudgeClientInterface
     }
 
     /**
-     * @internal public for tests only
-     */
-    public static function retryDelay(string $retryAfter, int $attempt): int
-    {
-        return JudgeHttp::retryDelay($retryAfter, $attempt);
-    }
-
-    /**
      * Model and messages only: the hash a verdict was saved under before other judges existed, so old cassettes match.
      */
     public function cachePayload(JudgeRequest $request): array

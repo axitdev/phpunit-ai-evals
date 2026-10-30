@@ -24,6 +24,8 @@ final class JudgeHttp
 
     /**
      * Retry-After is either seconds or an HTTP date; without it, back off 1s, then 2s.
+     *
+     * @internal public for tests only
      */
     public static function retryDelay(string $retryAfter, int $attempt): int
     {

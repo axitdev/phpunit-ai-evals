@@ -60,7 +60,6 @@ trait AiAssertionsTrait
         AiTraceCollector::current()->clear();
         $this->aiVcrClient = null;
         $this->aiJudgeClient = null;
-        $this->aiJudgeCached = true;
         $this->aiOccurrenceCounters = [];
     }
 
@@ -349,19 +348,20 @@ trait AiAssertionsTrait
             if ($probability < 0.0 || $probability > 1.0) {
                 throw new InvalidArgumentException(sprintf('Case #%s returned the probability %s; expected 0.0 to 1.0.', $key, $probability));
             }
-            $errors[(string) $key] = ($probability - ($outcome ? 1.0 : 0.0)) ** 2;
+            // A list, not keyed by case: a generator may repeat keys, and every case must count.
+            $errors[] = [$key, ($probability - ($outcome ? 1.0 : 0.0)) ** 2];
         }
         if ($errors === []) {
             Assert::fail(sprintf('%s: the dataset has no cases.', $name));
         }
-        $brier = array_sum($errors) / count($errors);
-        arsort($errors);
-        $worst = array_map(static fn(string $k, float $e): string => sprintf('#%s: %.3f', $k, $e), array_keys($errors), $errors);
+        $brier = array_sum(array_column($errors, 1)) / count($errors);
+        usort($errors, static fn(array $a, array $b): int => $b[1] <=> $a[1]);
+        $worst = array_map(static fn(array $e): string => sprintf('#%s: %.3f', $e[0], $e[1]), array_slice($errors, 0, 5));
 
         Assert::assertLessThanOrEqual(
             $maxBrier,
             $brier,
-            sprintf("%s is %.3f over %d cases (need <= %.3f). Worst cases (squared error):\n%s", $name, $brier, count($errors), $maxBrier, implode("\n", array_slice($worst, 0, 5))),
+            sprintf("%s is %.3f over %d cases (need <= %.3f). Worst cases (squared error):\n%s", $name, $brier, count($errors), $maxBrier, implode("\n", $worst)),
         );
     }
 

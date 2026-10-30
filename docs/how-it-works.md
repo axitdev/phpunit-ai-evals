@@ -103,7 +103,7 @@ Token counts and tool calls are rebuilt from the chunks. OpenAI Chat Completions
 
 The judge looks for a saved verdict first and only sends a request when it's missing. Any judge is cached the same way, the built-in ones and your own, under the judge's `cachePayload()`: what it would send, including the model.
 
-A verdict is saved only when the judge answers with a `score` between 0 and 1. An answer without one, or on another scale such as `{"score": 7}`, fails the assertion with an error and nothing is saved, so a misbehaving judge can't pass a test. Verdicts are keyed on the judge model and the prompts (for a System One judge, the state and questions); like `temperature` for agent calls, changing the judge's base URI, temperature or JSON mode reuses saved verdicts until you re-record.
+A verdict is saved only when the judge answers with a `score` between 0 and 1 (for a System One judge: a probability for every question it asked). An answer without one, or on another scale such as `{"score": 7}`, fails the assertion with an error and nothing is saved, so a misbehaving judge can't pass a test. Verdicts are keyed on the judge model and the prompts (for a System One judge, the state and questions); like `temperature` for agent calls, changing the judge's base URI, temperature or JSON mode reuses saved verdicts until you re-record.
 
 ## The PHPUnit extension
 

@@ -19,7 +19,7 @@ final readonly class JudgeRequest
     public const string GROUNDING = 'grounding';
 
     /**
-     * @param list<string> $criteria
+     * @param list<string> $criteria non-empty for a rubric, empty for grounding
      * @param list<string> $context
      */
     private function __construct(

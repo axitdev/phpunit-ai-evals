@@ -96,7 +96,7 @@ To grade with Jev instead, see [a System One judge](configuration.md#a-system-on
 
 ## Local models and other judges
 
-The judge talks the OpenAI Chat Completions protocol, so Claude, Gemini and local models can grade too (see the [judge settings](configuration.md#the-judge)). For a local Ollama:
+The default judge talks the OpenAI Chat Completions protocol, so Claude, Gemini and local models can grade too (see the [judge settings](configuration.md#the-judge)); a [System One model](configuration.md#a-system-one-judge) can grade as well. For a local Ollama:
 
 ```xml
 <php>

@@ -21,7 +21,8 @@ final class DecisionConstraint extends Constraint
      */
     private function __construct(
         private readonly string $questionId,
-        private readonly string $expectedType,
+        /** null: any question type */
+        private readonly ?string $expectedType,
         private readonly string $expectation,
         private readonly Closure $check,
     ) {}
@@ -53,7 +54,7 @@ final class DecisionConstraint extends Constraint
 
     public static function confidenceAtLeast(string $questionId, float $min): self
     {
-        return new self($questionId, '', sprintf('answered with confidence >= %.2f', $min), static fn(Decision $d): bool => $d->confidence !== null && $d->confidence >= $min);
+        return new self($questionId, null, sprintf('answered with confidence >= %.2f', $min), static fn(Decision $d): bool => $d->confidence !== null && $d->confidence >= $min);
     }
 
     /**
@@ -78,7 +79,7 @@ final class DecisionConstraint extends Constraint
         $this->found = self::latest($other, $this->questionId);
 
         return $this->found !== null
-            && ($this->expectedType === '' || $this->found->type === $this->expectedType)
+            && ($this->expectedType === null || $this->found->type === $this->expectedType)
             && ($this->check)($this->found);
     }
 
@@ -93,7 +94,7 @@ final class DecisionConstraint extends Constraint
         if ($d === null) {
             return 'No recorded System One answer has that question id.';
         }
-        if ($this->expectedType !== '' && $d->type !== $this->expectedType) {
+        if ($this->expectedType !== null && $d->type !== $this->expectedType) {
             return sprintf('It is a %s question, not a %s question.', $d->type, $this->expectedType);
         }
 

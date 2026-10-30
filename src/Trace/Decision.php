@@ -45,7 +45,7 @@ final readonly class Decision
             $type,
             match ($type) {
                 self::CHOICE => Payload::string($answer['choice'] ?? null),
-                self::SCORE => Payload::float($answer['score'] ?? null),
+                // A Score's value is under `score`, a Noul's under `noul`.
                 default => Payload::float($answer[$type] ?? null),
             },
             $probabilities,
