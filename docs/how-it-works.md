@@ -9,7 +9,9 @@ Before a request is looked up, it's reduced to the parts that decide what you as
 `PromptNormalizer` keeps only these fields: `model`, `messages` / `contents` / `system` / `input` / `prompt`, `tools`, `tool_choice`, `response_format`, `stream` (where `false` counts as absent), the Responses API's `instructions`, `previous_response_id` and `text`, and the Gemini and Ollama equivalents. Settings that change what comes back are kept too: reasoning (`thinking`, `reasoning`, `reasoning_effort`, Ollama's `think`), Anthropic's `output_config` / `output_format`, and from Gemini's `generationConfig` only `responseMimeType`, `responseSchema`, `responseJsonSchema`, `responseModalities` and `thinkingConfig`. Everything else, such as `temperature`, `max_tokens` or `seed`, is ignored, so changing it replays the old recording. Then it:
 
 - sorts keys at every level, and re-encodes the JSON strings in `tool_calls[].function.arguments` with sorted keys
-- replaces ISO-8601 dates and timestamps with `<TIMESTAMP>`, UUIDs with `<UUID>`, `data:...;base64,` blobs with `<BASE64_SHA256:...>`, and matches of your `ignorePatterns` with `<IGNORED>`. A date inside a longer token, such as the phone number `555-1234-56-78`, is left alone
+- replaces ISO-8601 dates and timestamps with `<TIMESTAMP>`, UUIDs with `<UUID>`, and matches of your `ignorePatterns` with `<IGNORED>`. A date inside a longer token, such as the phone number `555-1234-56-78`, is left alone
+- replaces binary content with `<binary sha256=… size=… mime=…>`: the SHA-256 of the decoded bytes, their size and MIME type. That covers `data:...;base64,` URIs anywhere in the request, Anthropic `base64` sources, Gemini `inlineData` and OpenAI `input_audio`. The same image hashes the same whichever way it was sent, and the bytes never reach the cassette
+- applies your [request matching](configuration.md#request-matching) rules: ignored fields are removed, normalized ones get their placeholder, and matched headers and extra fields are added
 - removes the signatures of Anthropic `thinking` blocks
 - hashes the result with SHA-256
 
@@ -17,19 +19,28 @@ Because dates and UUIDs become placeholders, two prompts that differ only in a d
 
 Some providers put part of the request in the URL: the model for Gemini, Claude on Vertex and Bedrock, the deployment for Azure OpenAI, and streaming for Gemini (`:streamGenerateContent`) and Bedrock (`/converse-stream`). Each provider's parser adds those to the payload through `requestPayload()`, so they're part of the hash too.
 
-Other HTTP traffic (`raw_http`) is hashed on its method, URL and whole body, after the same date, UUID and `ignorePatterns` replacements, so a search request that carries the current time still replays.
+Other HTTP traffic (`raw_http`) is hashed on its method, URL and whole body, after the same date, UUID and `ignorePatterns` replacements, so a search request that carries the current time still replays. The body is stored the way it is compared:
+
+- JSON as `{"json": …}`, decoded with sorted keys, so fields can be ignored and diffed by name
+- multipart uploads as `{"multipart": {…}}`: text fields keep their value, and each file becomes `{"filename", "mime", "size", "sha256"}`. The boundary is random per request, so it is left out; a field sent more than once keeps every value in order. This works the same for Laravel `Http::attach()` and for PSR-7 multipart streams
+- any other binary body as `{"binary": {"mime", "size", "sha256"}}`
+- everything else as text
 
 ## Matching
 
 A request matches a recording when the kind, the hash and the occurrence number all agree. The occurrence number counts how often the same request has been sent in the current test, across every client the test wrapped. That's how retries and repeated steps in an agent loop replay the 1st, 2nd and Nth answer in order. A request whose answer isn't recorded (a rate limit, a server error, a dropped connection) doesn't count, so the retry that succeeds is stored where a replay, which never sees the failure, looks for it.
 
-When a request has no recording in `replay` mode, `CassetteMissException` shows a diff against the closest recorded prompt and the command that re-records the test.
+When a request has no recording in `replay` mode, `CassetteMissException` names every field that differs from the closest recording, with both values, and gives the command that re-records the test.
+
+### Conversation turns
+
+During `runConversation()`, each turn's LLM requests are matched on the turn instead of the whole history: the payload gets a `conversation_turn` key (`refund#2`), and each prompt list (`messages`, `contents`, `input`) keeps its leading `system`/`developer` messages plus only what this turn added. The first request of a turn keeps just its last message, the new user message; later requests in the same turn, such as tool-call rounds, keep everything added since. A list is recognised by its first message, so a side call with its own prompt (a router, a classifier) is cut separately. The OpenAI Responses API's `previous_response_id` is dropped, since it changes whenever an earlier turn is re-recorded. Recorded entries carry `"turn": {"conversation": "refund", "index": 2}`.
 
 ## Cassette format
 
 ```json
 {
-  "version": "1.0",
+  "version": "1.1",
   "test": "App\\Tests\\RefundAgentTest::testAgentProcessesValidRefund",
   "interactions": [
     { "kind": "agent_call", "semantic_hash": "…", "occurrence_index": 0, "provider": "openai",
@@ -58,9 +69,14 @@ Cassettes contain your prompts and the model's answers in full. Before anything 
 - So are headers whose name ends in one of these words, after a `-` or `_`: `key`, `api-key`, `access-key`, `private-key`, `auth`, `authorization`, `token`, `secret`, `password`, `passwd`, `signature`, `cookie`. That catches gateway headers such as `x-portkey-api-key`, `Ocp-Apim-Subscription-Key` or `cf-aig-authorization`. The plural `tokens` doesn't count, so rate-limit headers like `x-ratelimit-remaining-tokens` stay readable.
 - URLs lose their `user:password@` part, and these query parameters are redacted: `key`, `api_key`, `apikey`, `access_token`, `refresh_token`, `id_token`, `token`, `client_secret`, `password` and `secret`, plus any name ending in one of the words above (except `key` and `cookie`), `credential(s)` or `client_assertion`, such as `session_token` or `aws_secret_access_key`. Names that only start with one, such as `token_count`, are left alone.
 - For `raw_http` traffic, such as OAuth token calls, the same names except `key` are redacted in JSON and form-encoded bodies, at any depth, in both directions. `true`, `false` and `null` values are kept, since they're never credentials. This happens before hashing, so a rotated secret still replays. The replayed response then carries `[REDACTED]` instead of the real token.
-- The extension's `redactHeaders` and `redactKeys` parameters add names to these lists (see [Configuration](configuration.md#your-own-secret-names)).
+- Credentials are also recognised by their shape, anywhere: in prompts, request and response bodies, URLs, header values and tool-call arguments in the trace. That covers `Bearer` and `Basic` tokens (the scheme is kept), OpenAI, Anthropic and OpenRouter `sk-` keys, Stripe keys, Google `AIza` keys, AWS access key IDs, GitHub, Slack, Hugging Face, Groq, xAI and Perplexity tokens, and JWTs. Prompts are scrubbed before hashing, so the same request still replays.
+- The extension's `redactHeaders`, `redactKeys` and `redactPatterns` parameters add to these lists (see [Configuration](configuration.md#your-own-secret-names)).
 
-LLM request and response bodies aren't scrubbed beyond the steps above, so keep credentials out of prompts. Also note that in `replay` mode a missing recording fails with a diff of the prompt, which ends up in your CI logs. If your prompts contain sensitive data, think about who can read those logs.
+Other private data in prompts, such as names or addresses, isn't scrubbed. Also note that in `replay` mode a missing recording fails with a diff of the prompt, which ends up in your CI logs. If your prompts contain sensitive data, think about who can read those logs.
+
+## Replay never reaches the network
+
+In `replay` mode the wrapped client never calls the client inside it, and the judge client is never built. A request without a recording throws `CassetteMissException`. Code under test can catch that exception, for example in a retry wrapper or a fallback answer, and the test could then pass on behaviour that was never recorded; so `AiAssertionsTrait` also fails any test in which a miss happened, even if the exception was swallowed. A test that expects the miss with `expectException(CassetteMissException::class)` is left alone.
 
 ## Provider support
 
@@ -100,7 +116,7 @@ Token counts and tool calls are rebuilt from the chunks. OpenAI Chat Completions
 
 ## Judge caching
 
-The judge looks for a saved verdict first. The real judge client is created lazily (a PHP 8.4 lazy proxy), so it's only built when a verdict is missing and a live call is needed.
+The judge looks for a saved verdict first. The real judge client is created lazily (a small lazy wrapper), so it's only built when a verdict is missing and a live call is needed.
 
 A verdict is saved only when the judge answers with a `score` between 0 and 1. An answer without one, or on another scale such as `{"score": 7}`, fails the assertion with an error and nothing is saved, so a misbehaving judge can't pass a test. Verdicts are keyed on the judge model and the prompts; like `temperature` for agent calls, changing the judge's base URI, temperature or JSON mode reuses saved verdicts until you re-record.
 

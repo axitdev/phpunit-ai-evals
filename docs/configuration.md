@@ -39,6 +39,60 @@ Common auth headers and credential fields are redacted out of the box (the list 
 <parameter name="redactKeys" value="session_id, signature"/> <!-- query parameters, form fields and JSON keys -->
 ```
 
+Credentials are also recognised by their shape wherever they appear (see [Secrets](how-it-works.md#secrets)). For your own token formats, add regular expressions, one per line:
+
+```xml
+<parameter name="redactPatterns" value="/acme_live_[0-9a-f]{32}/
+/tenant-[A-Z0-9]{20}/"/>
+```
+
+## Request matching
+
+A recording is replayed when the request asks the same thing (see [Semantic hashing](how-it-works.md#semantic-hashing)). You can widen or narrow what "the same" means. Fields are dot paths into the request as it is hashed, and `*` stands for any key or list position:
+
+| Option | What it does | Example |
+|---|---|---|
+| `ignoreFields` | leaves fields out of the comparison | `model`, `messages.*.name`, `metadata` |
+| `normalizeFields` | the field must be there, but any value matches | `metadata.request_id`, `user` |
+| `matchHeaders` | adds request headers to the comparison (none by default) | `X-Tenant`, `X-Feature-Flags` |
+| `matchFields` | compares fields that are left out by default | `temperature`, `seed` |
+
+Matched headers appear as `headers.<lowercase name>`, so they can be normalized too: `normalizeFields: ['headers.x-request-id']`. Secret headers are redacted before they are compared, so matching on `Authorization` compares nothing. Non-LLM traffic is hashed as `method`, `uri` and `body`; a JSON body sits under `body.json`, so `body.json.sent_at` ignores a timestamp field.
+
+Per class or test, with `#[AiVcr]`:
+
+```php
+#[AiVcr(
+    ignoreFields: ['model'],                                      // one recording for every model you try
+    normalizeFields: ['metadata.request_id', 'user' => '<USER>'], // a bare path gets the <NORMALIZED> placeholder
+    matchHeaders: ['X-Tenant'],
+    matchFields: ['temperature'],
+)]
+```
+
+For the whole suite, with comma-separated extension parameters:
+
+```xml
+<parameter name="ignoreFields" value="metadata, messages.*.name"/>
+<parameter name="normalizeFields" value="user, metadata.trace_id=&lt;TRACE&gt;"/>
+<parameter name="matchHeaders" value="X-Tenant"/>
+<parameter name="matchFields" value="temperature"/>
+```
+
+The three levels add up: the suite's rules, then the class's, then the method's. Changing these rules changes the hashes, so re-record the affected tests afterwards.
+
+When a request misses in `replay` mode, the error names each field that differs from the closest recording, with both values:
+
+```
+Differs from the closest recorded interaction in: messages.1.content, temperature
+  messages.1.content
+    recorded: "Refund order #404"
+    current:  "Refund order #405"
+  temperature
+    recorded: (absent)
+    current:  0.2
+```
+
 ## Attributes
 
 ```php
@@ -46,14 +100,14 @@ use Axitdev\PhpUnitAiEvals\Attributes\AiVcr;
 use Axitdev\PhpUnitAiEvals\Attributes\AiJudgeConfig;
 use Axitdev\PhpUnitAiEvals\Vcr\VcrMode;
 
-#[AiVcr(cassette: 'shared-refund-flow', mode: VcrMode::Replay, ignorePatterns: ['/order-\w+/'], ignoreDatesAndUuids: true)]
+#[AiVcr(cassette: 'shared-refund-flow', mode: VcrMode::Replay, ignorePatterns: ['/order-\w+/'], ignoreDatesAndUuids: true, ignoreFields: ['model'])]
 #[AiJudgeConfig(model: 'gpt-6-luna', baseUri: 'https://api.openai.com/v1', jsonMode: true)]
 public function testSomething(): void {}
 ```
 
 Both attributes work on a method or a class. Each setting on the method wins over the same setting on the class, and the ones the method leaves out come from the class.
 
-`cassette` names the file to use instead of the test name, so several tests can share one cassette. `ignorePatterns` are extra regular expressions removed from prompts before requests are compared. Use them for IDs or text that changes between runs. `ignoreDatesAndUuids: false` keeps dates and UUIDs in the comparison, for prompts that are about them (see [Semantic hashing](how-it-works.md#semantic-hashing)).
+`cassette` names the file to use instead of the test name, so several tests can share one cassette. `ignorePatterns` are extra regular expressions removed from prompts before requests are compared. Use them for IDs or text that changes between runs. `ignoreDatesAndUuids: false` keeps dates and UUIDs in the comparison, for prompts that are about them (see [Semantic hashing](how-it-works.md#semantic-hashing)). `ignoreFields`, `normalizeFields`, `matchHeaders` and `matchFields` are described in [Request matching](#request-matching); unlike the other settings, the class's and the method's lists are combined.
 
 ## The judge
 

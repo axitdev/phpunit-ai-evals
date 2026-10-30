@@ -20,11 +20,15 @@ Commit the updated cassette with the prompt change, so reviewers see the new ans
 
 ## I changed `temperature` (or `max_tokens`) but nothing was re-recorded. Why?
 
-Only the parts of a request that decide what you asked are compared: the model, the messages, tools, the response format, reasoning settings, streaming and a few similar fields. Sampling settings such as `temperature`, `max_tokens` and `seed` are left out, so tuning them doesn't break every recording. If you want new answers after changing them, re-record. [How it works](how-it-works.md#semantic-hashing) has the full list.
+Only the parts of a request that decide what you asked are compared: the model, the messages, tools, the response format, reasoning settings, streaming and a few similar fields. Sampling settings such as `temperature`, `max_tokens` and `seed` are left out, so tuning them doesn't break every recording. If you want new answers after changing them, re-record, or compare them from now on with `#[AiVcr(matchFields: ['temperature'])]`. [How it works](how-it-works.md#semantic-hashing) has the full list, and [Request matching](configuration.md#request-matching) how to change it.
+
+## I switched models and every recording misses. Can I keep them?
+
+Yes, if you only want to check that your code still works: `#[AiVcr(ignoreFields: ['model'])]` (or the `ignoreFields` extension parameter) leaves the model out of the comparison. Re-record when you want to see what the new model actually answers.
 
 ## My prompts contain the current date or a request ID. Will every run miss?
 
-No. Dates, times and UUIDs are replaced with placeholders before requests are compared. For other values that change between runs, such as order numbers or session IDs, add a pattern:
+No. Dates, times and UUIDs are replaced with placeholders before requests are compared. For a field that holds such a value, such as `metadata.request_id`, use `#[AiVcr(normalizeFields: ['metadata.request_id'])]`. For values inside the text, such as order numbers or session IDs, add a pattern:
 
 ```php
 #[AiVcr(ignorePatterns: ['/order-\w+/'])]
@@ -34,7 +38,7 @@ If the date is the point of the prompt ("Is 2025-12-25 a holiday?"), turn the pl
 
 ## Are cassettes safe to commit?
 
-They contain your prompts and the model's answers in full. API keys, cookies, auth headers, account IDs and credentials in URLs are replaced with `[REDACTED]` before anything is written, and you can add your own header and field names. Text inside prompts isn't scrubbed, so keep secrets out of prompts. See [Secrets](how-it-works.md#secrets).
+They contain your prompts and the model's answers in full. API keys, cookies, auth headers, account IDs and credentials in URLs are replaced with `[REDACTED]` before anything is written, and so are credential-shaped values (bearer tokens, `sk-` keys, JWTs and the like) anywhere, prompts included. You can add your own header names, field names and patterns. Uploaded files and inline images are stored as a hash, size and MIME type, never as bytes. Other personal data in prompts isn't scrubbed. See [Secrets](how-it-works.md#secrets).
 
 ## The same test sends the same prompt twice. Does that work?
 

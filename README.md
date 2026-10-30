@@ -11,9 +11,9 @@ Deterministic evaluations, semantic assertions, and regression testing for LLM p
 
 The first time a test runs, LLM calls hit the real provider API and are recorded to a local JSON "cassette". Subsequent runs replay the recorded responses offline in milliseconds. You can assert on execution traces (tool calls, token counts), test for prompt regressions, and run LLM-as-a-judge checks whose verdicts are also cached for zero-cost CI runs.
 
-Works out of the box with any **PSR-18 HTTP client** (Guzzle, Symfony HttpClient, `openai-php/client`, Anthropic SDK, Laravel `Http`, Prism). Compatible with OpenAI, Anthropic, Gemini, Ollama, and AWS Bedrock (streaming included).
+Works out of the box with any **PSR-18 HTTP client** (Guzzle, Symfony HttpClient, `openai-php/client`, Anthropic SDK, Prism), and with Laravel `Http` through `Http::fake()`, so existing feature tests gain cassettes without rewrites. Compatible with OpenAI, Anthropic, Gemini, Ollama, and AWS Bedrock (streaming included).
 
-**Requirements:** PHP 8.4+ and PHPUnit 12.5 or 13.
+**Requirements:** PHP 8.3+ and PHPUnit 12.5 or 13 (13 needs PHP 8.4).
 
 ---
 
@@ -43,6 +43,13 @@ self::assertNoHallucination(['The customer asked how long refunds take.', ...$do
 self::assertMatchesRubric('Gives a concrete number of days and stays polite', $answer);
 ```
 
+Rubrics and answers can be in any language. Grade every translation of an answer at once, and see which one failed:
+
+```php
+$this->assertVariantsMatchRubric('Gives a concrete number of days', ['en' => $en, 'pl' => $pl, 'uk' => $uk]);
+$this->assertSemanticallySimilar('Refunds take 5 business days.', $polishAnswer);
+```
+
 ### 3. Dataset Benchmarking & Schema Validation
 
 Run evaluations across JSONL/CSV test suites and require an overall pass-rate threshold rather than fragile absolute matches:
@@ -52,6 +59,8 @@ self::assertPassRate(Dataset::load(__DIR__ . '/datasets/reviews.jsonl'), 0.8, fu
     $json = $this->classifier->classify($case['review']);
 
     self::assertMatchesJsonSchema(self::SCHEMA, $json);
+    self::assertFieldIn('sentiment', ['positive', 'neutral', 'negative'], $json);
+    self::assertScoreBetween('confidence', 0.0, 1.0, $json);
     self::assertSame($case['expected'], json_decode($json, true)['sentiment']);
 });
 ```
@@ -64,9 +73,10 @@ In CI, tests run strictly in replay mode. Any prompt modification alters the sem
 No recorded agent_call with semantic_hash 3f2a… in cassette.
 Cassette: tests/fixtures/ai-cassettes/App_Tests_RefundAgentTest_testRefund.json
 
-Diff against closest recorded interaction (- recorded, + current):
--  "content": "You are a support agent."
-+  "content": "You are a friendly support agent."
+Differs from the closest recorded interaction in: messages.0.content
+  messages.0.content
+    recorded: "You are a support agent."
+    current:  "You are a friendly support agent."
 
 Re-record with: AI_EVAL_MODE=record vendor/bin/phpunit --filter 'RefundAgentTest::testRefund\b'
 ```
@@ -89,6 +99,27 @@ self::assertSampled(runs: 5, minPass: 4, testLogic: function (): void {
     $this->agent->handle('My order #404 arrived broken.');
     self::assertToolCalled('issue_refund');
 });
+```
+
+### 7. Multi-Turn Conversations
+
+Script the user's side of a conversation and assert after every turn, with the full history at hand. Each turn is recorded on its own, so editing one turn re-records only that turn:
+
+```php
+$this->runConversation('refund', fn(Conversation $c) => $this->bot->reply($c->messages()), [
+    Turn::user('My order arrived broken.', fn(string $reply) => self::assertStringContainsString('order number', $reply)),
+    Turn::user('It is #404.', function (string $reply, Conversation $c): void {
+        self::assertToolCalled('lookup_order', ['order_id' => 404], $c->turn(2)->interactions);
+    }),
+]);
+```
+
+### 8. Request Matching You Control
+
+Leave fields out of matching or accept any value for them, per test or for the whole suite, so recordings survive a model switch or a per-request ID. Requests with images and file uploads are matched by content hash; the bytes never reach the cassette.
+
+```php
+#[AiVcr(ignoreFields: ['model'], normalizeFields: ['metadata.request_id'], matchHeaders: ['X-Tenant'])]
 ```
 
 ---
@@ -169,9 +200,9 @@ Working examples are available in the [examples repository](https://github.com/a
 ## Documentation
 
 * [FAQ](docs/faq.md) — Common questions and troubleshooting.
-* [Integrations](docs/integrations.md) — Guzzle, Symfony, openai-php, Anthropic SDK, Laravel Http, Prism, and local models.
-* [Assertions Reference](docs/assertions.md) — Full assertion list, datasets, and probabilistic sampling.
-* [Configuration](docs/configuration.md) — Modes, cassette storage, judge setup, reports, and parallel test execution.
+* [Integrations](docs/integrations.md) — Guzzle, Symfony, openai-php, Anthropic SDK, Laravel Http (`fakeAiHttp()`), Prism, and local models.
+* [Assertions Reference](docs/assertions.md) — Full assertion list, structured output, other languages, conversations, datasets, and probabilistic sampling.
+* [Configuration](docs/configuration.md) — Modes, cassette storage, request matching, judge setup, reports, and parallel test execution.
 * [How It Works](docs/how-it-works.md) — Request hashing, cassette formats, secret redaction, streaming, and provider support.
 
 ---
