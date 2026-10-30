@@ -55,9 +55,19 @@ jobs:
       # Replay-only, as on any CI: a request missing from a cassette fails instead of reaching a provider, and no job
       # needs API keys. (Auto mode already turns into replay on CI; this keeps it so if that detection ever changes.)
       - name: PHPUnit (replay-only)
+        shell: bash
         env:
           AI_EVAL_MODE: replay
-        run: composer test
+        run: |
+          set +e
+          composer test > phpunit.txt 2>&1
+          code=$?
+          cat phpunit.txt
+          if [ $code -ne 0 ]; then
+            msg=$(grep -v '^\s*$' phpunit.txt | tail -80 | sed -e 's/%/%25/g' -e 's/\r//g' | awk '{printf "%s%%0A", $0}')
+            echo "::error title=phpunit::$msg"
+          fi
+          exit $code
 
   code-style:
     name: Code style
@@ -99,7 +109,15 @@ jobs:
       - name: Coverage
         run: |
           mkdir -p build
-          vendor/bin/phpunit --coverage-text=build/coverage.txt
+          set +e
+          vendor/bin/phpunit --coverage-text=build/coverage.txt > phpunit.txt 2>&1
+          code=$?
+          cat phpunit.txt
+          if [ $code -ne 0 ]; then
+            msg=$(grep -v '^\s*$' phpunit.txt | tail -80 | sed -e 's/%/%25/g' -e 's/\r//g' | awk '{printf "%s%%0A", $0}')
+            echo "::error title=phpunit::$msg"
+          fi
+          exit $code
           grep -A3 'Summary:' build/coverage.txt
 
       # Pull requests only, and it never fails the build: escaped mutants show up as annotations to read, and the full
