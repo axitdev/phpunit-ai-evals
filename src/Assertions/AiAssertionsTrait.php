@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Axitdev\PhpUnitAiEvals\Assertions;
 
+use Axitdev\PhpUnitAiEvals\Assertions\Constraints\DecisionConstraint;
 use Axitdev\PhpUnitAiEvals\Assertions\Constraints\MatchesJsonSchemaConstraint;
 use Axitdev\PhpUnitAiEvals\Assertions\Constraints\MatchesRubricConstraint;
 use Axitdev\PhpUnitAiEvals\Assertions\Constraints\NoHallucinationConstraint;
@@ -14,11 +15,14 @@ use Axitdev\PhpUnitAiEvals\Attributes\AiJudgeConfig;
 use Axitdev\PhpUnitAiEvals\Attributes\AiVcr;
 use Axitdev\PhpUnitAiEvals\Judge\CachedJudgeClient;
 use Axitdev\PhpUnitAiEvals\Judge\JudgeClientInterface;
+use Axitdev\PhpUnitAiEvals\Judge\JudgeProvider;
 use Axitdev\PhpUnitAiEvals\Judge\JudgeSettings;
 use Axitdev\PhpUnitAiEvals\Judge\Psr18JudgeClient;
+use Axitdev\PhpUnitAiEvals\Judge\SystemOneJudgeClient;
 use Axitdev\PhpUnitAiEvals\PhpUnit\TestContextRegistry;
 use Axitdev\PhpUnitAiEvals\Trace\AiInteraction;
 use Axitdev\PhpUnitAiEvals\Trace\AiTraceCollector;
+use Axitdev\PhpUnitAiEvals\Trace\Decision;
 use Axitdev\PhpUnitAiEvals\Trace\Parser\ProviderPayloadParserInterface;
 use Axitdev\PhpUnitAiEvals\Vcr\AiVcrClient;
 use Axitdev\PhpUnitAiEvals\Vcr\CassetteStorage;
@@ -45,6 +49,8 @@ trait AiAssertionsTrait
 
     private ?JudgeClientInterface $aiJudgeClient = null;
 
+    private bool $aiJudgeCached = true;
+
     /** @var array<string, OccurrenceCounter> per cassette path, shared by every client wrapped in this test */
     private array $aiOccurrenceCounters = [];
 
@@ -54,6 +60,7 @@ trait AiAssertionsTrait
         AiTraceCollector::current()->clear();
         $this->aiVcrClient = null;
         $this->aiJudgeClient = null;
+        $this->aiJudgeCached = true;
         $this->aiOccurrenceCounters = [];
     }
 
@@ -97,9 +104,15 @@ trait AiAssertionsTrait
             : TestContextRegistry::cassettesPath() ?? (string) getcwd() . '/tests/fixtures/ai-cassettes';
     }
 
-    protected function useJudgeClient(JudgeClientInterface $judge): void
+    /**
+     * Replaces the configured judge for this test. Its verdicts are recorded in and replayed from the cassette like
+     * the built-in judges' (keyed on its cachePayload()) once wrapHttpClient() has been called; pass $cache: false to
+     * call it every time.
+     */
+    protected function useJudgeClient(JudgeClientInterface $judge, bool $cache = true): void
     {
         $this->aiJudgeClient = $judge;
+        $this->aiJudgeCached = $cache;
     }
 
     protected function getLastAiInteraction(): AiInteraction
@@ -220,13 +233,136 @@ trait AiAssertionsTrait
         );
     }
 
+    /**
+     * @param string|list<string> $rubric One criterion, or several that must all hold. Prefer one per thing checked:
+     *                                    the System One judge grades each separately and fails on the weakest.
+     */
     public function assertMatchesRubric(
-        string $rubric,
+        string|array $rubric,
         string $actualOutput,
         float $threshold = 0.80,
         string $message = '',
     ): void {
         Assert::assertThat($actualOutput, new MatchesRubricConstraint($this->aiJudge(), $rubric, $threshold), $message);
+    }
+
+    /**
+     * The latest System One answer to $questionId chose $option (and gave it at least $minProbability).
+     *
+     * @param AiInteraction|list<AiInteraction>|null $interactions Defaults to getAllAiInteractions()
+     */
+    public static function assertDecision(
+        string $questionId,
+        string $option,
+        float $minProbability = 0.0,
+        AiInteraction|array|null $interactions = null,
+        string $message = '',
+    ): void {
+        Assert::assertThat(self::aiInteractionList($interactions), DecisionConstraint::choice($questionId, $option, $minProbability), $message);
+    }
+
+    /**
+     * The latest System One yes/no answer to $questionId is yes with probability at least $min.
+     *
+     * @param AiInteraction|list<AiInteraction>|null $interactions Defaults to getAllAiInteractions()
+     */
+    public static function assertNoulAtLeast(
+        string $questionId,
+        float $min,
+        AiInteraction|array|null $interactions = null,
+        string $message = '',
+    ): void {
+        Assert::assertThat(self::aiInteractionList($interactions), DecisionConstraint::noulAtLeast($questionId, $min), $message);
+    }
+
+    /**
+     * The latest System One yes/no answer to $questionId is yes with probability at most $max.
+     *
+     * @param AiInteraction|list<AiInteraction>|null $interactions Defaults to getAllAiInteractions()
+     */
+    public static function assertNoulAtMost(
+        string $questionId,
+        float $max,
+        AiInteraction|array|null $interactions = null,
+        string $message = '',
+    ): void {
+        Assert::assertThat(self::aiInteractionList($interactions), DecisionConstraint::noulAtMost($questionId, $max), $message);
+    }
+
+    /**
+     * The latest System One Score for $questionId lies within [$min, $max], on the 0..top-level scale it was asked on.
+     *
+     * @param AiInteraction|list<AiInteraction>|null $interactions Defaults to getAllAiInteractions()
+     */
+    public static function assertScoreBetween(
+        string $questionId,
+        float $min,
+        float $max,
+        AiInteraction|array|null $interactions = null,
+        string $message = '',
+    ): void {
+        Assert::assertThat(self::aiInteractionList($interactions), DecisionConstraint::scoreBetween($questionId, $min, $max), $message);
+    }
+
+    /**
+     * The latest System One Choice or Score answer to $questionId has at least this confidence. Noul answers have none.
+     *
+     * @param AiInteraction|list<AiInteraction>|null $interactions Defaults to getAllAiInteractions()
+     */
+    public static function assertConfidenceAtLeast(
+        string $questionId,
+        float $min,
+        AiInteraction|array|null $interactions = null,
+        string $message = '',
+    ): void {
+        Assert::assertThat(self::aiInteractionList($interactions), DecisionConstraint::confidenceAtLeast($questionId, $min), $message);
+    }
+
+    /**
+     * The latest System One answer to $questionId, for checks the assertions don't cover.
+     */
+    protected function getDecision(string $questionId): Decision
+    {
+        return DecisionConstraint::latest(AiTraceCollector::current()->all(), $questionId)
+            ?? throw new LogicException(sprintf('No System One answer to "%s" was recorded in this test.', $questionId));
+    }
+
+    /**
+     * Calibration over a dataset: the mean squared gap between each predicted probability and what happened
+     * (Brier score; 0 is perfect, 0.25 is what always answering 0.5 gets). $testLogic returns the probability the
+     * model gave the outcome and whether the outcome is the true one, e.g. `[$this->getDecision('is_urgent')->value,
+     * $case['urgent']]`.
+     *
+     * @template TCase
+     * @param iterable<array-key, TCase> $cases
+     * @param callable(TCase, array-key): array{float, bool} $testLogic
+     */
+    protected function assertBrierScoreAtMost(iterable $cases, float $maxBrier, callable $testLogic, string $name = 'brier score'): void
+    {
+        if ($maxBrier < 0.0 || $maxBrier > 1.0) {
+            throw new InvalidArgumentException(sprintf('assertBrierScoreAtMost() needs a maxBrier between 0.0 and 1.0, got %s.', $maxBrier));
+        }
+        $errors = [];
+        foreach ($cases as $key => $case) {
+            AiTraceCollector::current()->clear();
+            [$probability, $outcome] = $testLogic($case, $key);
+            if ($probability < 0.0 || $probability > 1.0) {
+                throw new InvalidArgumentException(sprintf('Case #%s returned the probability %s; expected 0.0 to 1.0.', $key, $probability));
+            }
+            $errors[(string) $key] = ($probability - ($outcome ? 1.0 : 0.0)) ** 2;
+        }
+        if ($errors === []) {
+            Assert::fail(sprintf('%s: the dataset has no cases.', $name));
+        }
+        $brier = array_sum($errors) / count($errors);
+        arsort($errors);
+        $worst = array_map(static fn(string $k, float $e): string => sprintf('#%s: %.3f', $k, $e), array_keys($errors), $errors);
+
+        Assert::assertLessThanOrEqual(
+            $maxBrier,
+            $brier,
+            sprintf("%s is %.3f over %d cases (need <= %.3f). Worst cases (squared error):\n%s", $name, $brier, count($errors), $maxBrier, implode("\n", array_slice($worst, 0, 5))),
+        );
     }
 
     /**
@@ -311,23 +447,28 @@ trait AiAssertionsTrait
 
     private function aiJudge(): JudgeClientInterface
     {
+        $vcr = $this->aiVcrClient;
         if ($this->aiJudgeClient !== null) {
-            return $this->aiJudgeClient;
+            return $vcr !== null && $this->aiJudgeCached ? new CachedJudgeClient($vcr, $this->aiJudgeClient) : $this->aiJudgeClient;
         }
-        $vcr = $this->aiVcrClient ?? throw new LogicException('Call wrapHttpClient() before using Judge assertions, or inject one with useJudgeClient().');
+        if ($vcr === null) {
+            throw new LogicException('Call wrapHttpClient() before using Judge assertions, or inject one with useJudgeClient().');
+        }
         [$method, $class] = $this->attributes(AiJudgeConfig::class);
         $settings = JudgeSettings::resolve(new AiJudgeConfig(
             $method->model ?? $class?->model,
             $method->baseUri ?? $class?->baseUri,
             $method->temperature ?? $class?->temperature,
             $method->jsonMode ?? $class?->jsonMode,
+            $method->provider ?? $class?->provider,
         ));
-        $http = $vcr->inner();
+        // The judge talks to the wrapped client directly: its traffic is cached as verdicts, not as agent calls.
+        $live = match ($settings->provider) {
+            JudgeProvider::OpenAiCompatible => new Psr18JudgeClient($vcr->inner(), $settings),
+            JudgeProvider::SystemOne => new SystemOneJudgeClient($vcr->inner(), $settings),
+        };
 
-        $live = (new ReflectionClass(Psr18JudgeClient::class))
-            ->newLazyProxy(static fn(): Psr18JudgeClient => new Psr18JudgeClient($http, $settings));
-
-        return $this->aiJudgeClient = new CachedJudgeClient($vcr, $live, $settings->model);
+        return new CachedJudgeClient($vcr, $live);
     }
 
     private function aiVcrConfig(): AiVcr

@@ -73,6 +73,27 @@ $stack->push(fn(callable $next): callable => fn(RequestInterface $request, array
 $sdk = new SomeSdk(new \GuzzleHttp\Client(['handler' => $stack]));
 ```
 
+## System One models (TypeSafe Jev)
+
+No SDK is needed: Jev has one JSON endpoint, so any PSR-18 client works and its calls are recorded like the others. The answers are traced as decisions:
+
+```php
+$response = $this->wrapHttpClient(new \GuzzleHttp\Client())->sendRequest(
+    $factory->createRequest('POST', 'https://api.typesafe.ai/v1/systemone')
+        ->withHeader('Authorization', 'Bearer ' . getenv('TYPESAFE_API_KEY'))
+        ->withHeader('Content-Type', 'application/json')
+        ->withBody($factory->createStream(json_encode([
+            'model' => 'jev-latest',
+            'state' => $ticket,
+            'questions' => ['is_urgent' => ['type' => 'noul', 'instructions' => 'The message conveys urgency']],
+        ]))),
+);
+
+self::assertNoulAtLeast('is_urgent', 0.7);
+```
+
+To grade with Jev instead, see [a System One judge](configuration.md#a-system-one-judge).
+
 ## Local models and other judges
 
 The judge talks the OpenAI Chat Completions protocol, so Claude, Gemini and local models can grade too (see the [judge settings](configuration.md#the-judge)). For a local Ollama:

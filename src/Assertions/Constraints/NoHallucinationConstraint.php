@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace Axitdev\PhpUnitAiEvals\Assertions\Constraints;
 
 use Axitdev\PhpUnitAiEvals\Judge\JudgeClientInterface;
-use Axitdev\PhpUnitAiEvals\Judge\JudgePrompts;
+use Axitdev\PhpUnitAiEvals\Judge\JudgeRequest;
 
 final class NoHallucinationConstraint extends JudgedConstraint
 {
@@ -27,13 +27,8 @@ final class NoHallucinationConstraint extends JudgedConstraint
         return 'hallucination score';
     }
 
-    protected function systemPrompt(): string
+    protected function request(string $output): JudgeRequest
     {
-        return JudgePrompts::HALLUCINATION_SYSTEM;
-    }
-
-    protected function userPrompt(string $output): string
-    {
-        return JudgePrompts::hallucination($this->context, $output);
+        return JudgeRequest::grounding($this->context, $output);
     }
 }

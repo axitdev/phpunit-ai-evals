@@ -4,6 +4,19 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Added
+- System One models (TypeSafe Jev): calls to `/v1/systemone` are recorded, replayed and traced; their typed answers are `AiInteraction::$decisions`.
+- Decision assertions: `assertDecision()`, `assertNoulAtLeast()`, `assertNoulAtMost()`, `assertScoreBetween()`, `assertConfidenceAtLeast()`, plus `getDecision()`.
+- `assertBrierScoreAtMost()` to check that predicted probabilities are calibrated over a dataset.
+- A System One judge (`AI_EVAL_JUDGE_PROVIDER=system-one` or `#[AiJudgeConfig(provider: 'system-one')]`): one yes/no question per rubric criterion or per sentence of the output, scored by the weakest answer.
+- `assertMatchesRubric()` takes a list of criteria that must all hold.
+
+### Changed
+- **Breaking:** `JudgeClientInterface::judge()` takes a `JudgeRequest` instead of two prompts, and judges implement `cachePayload()`. Prompt building moved into the LLM judge.
+- Judges set with `useJudgeClient()` are now cached in the cassette like the built-in ones; `useJudgeClient($judge, cache: false)` restores the old behaviour.
+- Verdicts are hashed on every key of the judge's cache payload. The built-in LLM judge sends the same payload as before, so existing cassettes still replay.
+- The LLM judge no longer needs a lazy proxy: PSR-17 factories are looked up on the first live request.
+
 ## [0.0.2] - 2026-10-24
 
 First pre-release. Experimental: the API, the cassette format and request matching may change in any release before 1.0.

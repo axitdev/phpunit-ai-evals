@@ -17,6 +17,7 @@ use Axitdev\PhpUnitAiEvals\Trace\Parser\OpenAiPayloadParser;
 use Axitdev\PhpUnitAiEvals\Trace\Parser\OpenAiResponsesPayloadParser;
 use Axitdev\PhpUnitAiEvals\Trace\Parser\ProviderPayloadParserInterface;
 use Axitdev\PhpUnitAiEvals\Trace\Parser\StreamingPayloadParserInterface;
+use Axitdev\PhpUnitAiEvals\Trace\Parser\SystemOnePayloadParser;
 use Axitdev\PhpUnitAiEvals\Trace\ToolCall;
 use Axitdev\PhpUnitAiEvals\Vcr\Exception\CassetteMissException;
 use DateTimeImmutable;
@@ -36,7 +37,7 @@ final class AiVcrClient implements ClientInterface
 
     private const JSON_FLAGS = JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES;
 
-    private const PROMPT_KEYS = ['messages', 'contents', 'input', 'prompt'];
+    private const PROMPT_KEYS = ['messages', 'contents', 'input', 'prompt', 'state'];
 
     /** Rate limits, timeouts and rejected credentials say nothing about the request. */
     private const UNRECORDED_STATUSES = [401, 403, 407, 408, 429];
@@ -92,6 +93,7 @@ final class AiVcrClient implements ClientInterface
             new GeminiPayloadParser(),
             new OllamaPayloadParser(),
             new BedrockConversePayloadParser(),
+            new SystemOnePayloadParser(),
         ];
     }
 
@@ -196,12 +198,12 @@ final class AiVcrClient implements ClientInterface
     }
 
     /**
-     * @param array<string, mixed> $payload Messages/model sent to the judge; hashed like any other prompt
+     * @param array<string, mixed> $payload The judge's cachePayload(); every key is hashed, dates and UUIDs as placeholders
      * @param callable(): JudgeVerdict $live
      */
     public function judgeVerdict(array $payload, callable $live): JudgeVerdict
     {
-        $normalized = $this->normalizer->normalize($payload);
+        $normalized = $this->normalizer->normalizeJudge($payload);
         $hash = $this->normalizer->hash($normalized);
         $occurrence = $this->occurrences->next(Cassette::KIND_JUDGE, $hash);
 

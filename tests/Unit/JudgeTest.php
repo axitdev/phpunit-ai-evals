@@ -6,14 +6,13 @@ namespace Axitdev\PhpUnitAiEvals\Tests\Unit;
 
 use Axitdev\PhpUnitAiEvals\Attributes\AiJudgeConfig;
 use Axitdev\PhpUnitAiEvals\Judge\CachedJudgeClient;
-use Axitdev\PhpUnitAiEvals\Judge\JudgeClientInterface;
 use Axitdev\PhpUnitAiEvals\Judge\JudgePrompts;
+use Axitdev\PhpUnitAiEvals\Judge\JudgeRequest;
 use Axitdev\PhpUnitAiEvals\Judge\JudgeSettings;
 use Axitdev\PhpUnitAiEvals\Judge\JudgeVerdict;
 use Axitdev\PhpUnitAiEvals\Judge\Psr18JudgeClient;
 use Axitdev\PhpUnitAiEvals\Support\Payload;
 use Axitdev\PhpUnitAiEvals\Tests\Support\FakeClient;
-use Axitdev\PhpUnitAiEvals\Tests\Support\SpyJudge;
 use Axitdev\PhpUnitAiEvals\Tests\Support\TempDirTrait;
 use Axitdev\PhpUnitAiEvals\Trace\AiTraceCollector;
 use Axitdev\PhpUnitAiEvals\Vcr\AiVcrClient;
@@ -23,7 +22,6 @@ use JsonException;
 use PHPUnit\Framework\Attributes\After;
 use PHPUnit\Framework\Attributes\Before;
 use PHPUnit\Framework\TestCase;
-use ReflectionClass;
 use RuntimeException;
 
 final class JudgeTest extends TestCase
@@ -52,9 +50,14 @@ final class JudgeTest extends TestCase
         }
     }
 
+    private static function rubric(string $criterion = 'r', string $output = 'o'): JudgeRequest
+    {
+        return JudgeRequest::rubric($criterion, $output);
+    }
+
     private static function judgeAnswering(string $content): JudgeVerdict
     {
-        return (new Psr18JudgeClient(new FakeClient(FakeClient::json(FakeClient::openAiReply($content))), JudgeSettings::resolve()))->judge('s', 'u');
+        return (new Psr18JudgeClient(new FakeClient(FakeClient::json(FakeClient::openAiReply($content))), JudgeSettings::resolve()))->judge(self::rubric());
     }
 
     public function testJudgeAnswerToleratesFencesProseAndNesting(): void
@@ -70,7 +73,7 @@ final class JudgeTest extends TestCase
     {
         foreach ([300 => 'x', 400 => str_repeat('é', 400)] as $status => $body) {
             try {
-                (new Psr18JudgeClient(new FakeClient(new \Nyholm\Psr7\Response($status, [], $body)), JudgeSettings::resolve()))->judge('s', 'u');
+                (new Psr18JudgeClient(new FakeClient(new \Nyholm\Psr7\Response($status, [], $body)), JudgeSettings::resolve()))->judge(self::rubric());
                 self::fail("expected HTTP $status to fail");
             } catch (RuntimeException $e) {
                 self::assertSame("Judge request failed with HTTP $status: " . mb_substr($body, 0, 300), $e->getMessage());
@@ -134,7 +137,7 @@ final class JudgeTest extends TestCase
         $http = new FakeClient(FakeClient::json(FakeClient::openAiReply($content)));
         $judge = new Psr18JudgeClient($http, new JudgeSettings('http://judge.test/v1/', 'judge-m', 'k', 0.0));
 
-        $verdict = $judge->judge('SYS', 'USR');
+        $verdict = $judge->judge(self::rubric('be kind', 'hi'));
 
         self::assertEquals(new JudgeVerdict(0.9, 'fine'), $verdict);
         $request = $http->requests[0];
@@ -143,12 +146,13 @@ final class JudgeTest extends TestCase
         self::assertSame('POST', $request->getMethod());
         $sent = json_decode((string) $request->getBody(), true);
         self::assertSame('judge-m', Payload::get($sent, 'model'));
-        self::assertSame('SYS', Payload::get($sent, 'messages', 0, 'content'));
+        self::assertSame(JudgePrompts::RUBRIC_SYSTEM, Payload::get($sent, 'messages', 0, 'content'));
+        self::assertSame(JudgePrompts::rubric('be kind', 'hi'), Payload::get($sent, 'messages', 1, 'content'));
         self::assertSame('json_object', Payload::get($sent, 'response_format', 'type'));
         self::assertSame(0, Payload::get($sent, 'temperature'));
 
         $plain = new FakeClient(FakeClient::json(FakeClient::openAiReply($content)));
-        (new Psr18JudgeClient($plain, new JudgeSettings('http://judge.test/v1', 'm', 'k', jsonMode: false)))->judge('s', 'u');
+        (new Psr18JudgeClient($plain, new JudgeSettings('http://judge.test/v1', 'm', 'k', jsonMode: false)))->judge(self::rubric());
         $sent = Payload::map(json_decode((string) $plain->requests[0]->getBody(), true));
         self::assertArrayNotHasKey('response_format', $sent);
         self::assertArrayNotHasKey('temperature', $sent, 'models such as Claude 5 reject temperature, so null leaves it out');
@@ -157,7 +161,7 @@ final class JudgeTest extends TestCase
     public function testPsr18JudgeToleratesMissingReasonAndNumericStrings(): void
     {
         $http = new FakeClient(FakeClient::json(FakeClient::openAiReply('{"score": "0.5"}')));
-        $verdict = (new Psr18JudgeClient($http, JudgeSettings::resolve()))->judge('s', 'u');
+        $verdict = (new Psr18JudgeClient($http, JudgeSettings::resolve()))->judge(self::rubric());
 
         self::assertEquals(new JudgeVerdict(0.5, ''), $verdict);
     }
@@ -167,7 +171,7 @@ final class JudgeTest extends TestCase
         foreach (['{"score": 7}', '{"score": -0.1}', '{"reason": "fine"}', '{"score": "high"}', '{"score": null}'] as $answer) {
             $judge = new Psr18JudgeClient(new FakeClient(FakeClient::json(FakeClient::openAiReply($answer))), JudgeSettings::resolve());
             try {
-                $judge->judge('s', 'u');
+                $judge->judge(self::rubric());
                 self::fail("expected UnexpectedValueException for: $answer");
             } catch (\UnexpectedValueException $e) {
                 self::assertStringContainsString($answer, $e->getMessage());
@@ -183,12 +187,12 @@ final class JudgeTest extends TestCase
             FakeClient::json(FakeClient::openAiReply('{"score": 0.8, "reason": "ok"}')),
         );
 
-        self::assertEquals(new JudgeVerdict(0.8, 'ok'), (new Psr18JudgeClient($http, JudgeSettings::resolve()))->judge('s', 'u'));
+        self::assertEquals(new JudgeVerdict(0.8, 'ok'), (new Psr18JudgeClient($http, JudgeSettings::resolve()))->judge(self::rubric()));
         self::assertCount(3, $http->requests);
 
         $exhausted = new FakeClient(...array_fill(0, 3, FakeClient::json(['error' => 'down'], 503, ['Retry-After' => '0'])));
         try {
-            (new Psr18JudgeClient($exhausted, JudgeSettings::resolve()))->judge('s', 'u');
+            (new Psr18JudgeClient($exhausted, JudgeSettings::resolve()))->judge(self::rubric());
             self::fail('expected exception');
         } catch (RuntimeException $e) {
             self::assertStringContainsString('HTTP 503', $e->getMessage());
@@ -202,7 +206,7 @@ final class JudgeTest extends TestCase
 
         $this->expectException(RuntimeException::class);
         $this->expectExceptionMessage('HTTP 401');
-        (new Psr18JudgeClient($http, JudgeSettings::resolve()))->judge('s', 'u');
+        (new Psr18JudgeClient($http, JudgeSettings::resolve()))->judge(self::rubric());
     }
 
     public function testSystemPromptsAskForJsonAndDistrustTheOutput(): void
@@ -220,31 +224,19 @@ final class JudgeTest extends TestCase
         self::assertSame(1, preg_match_all('#<\s*/\s*output\s*>#i', $prompt));
     }
 
-    public function testCachedJudgeDoesNotInitializeLazyLiveClientWhenServedFromCassette(): void
+    public function testCachedJudgeMakesNoRequestWhenServedFromCassette(): void
     {
         $storage = new CassetteStorage($this->tmp);
         $path = $storage->pathFor('j');
         $vcr = static fn(VcrMode $mode): AiVcrClient => new AiVcrClient(new FakeClient(), $storage, $path, 'j', $mode, new AiTraceCollector());
 
-        $initialized = 0;
-        $reflection = new ReflectionClass(Psr18JudgeClient::class);
-        $lazy = static function () use (&$initialized, $reflection): JudgeClientInterface {
-            return $reflection->newLazyProxy(static function () use (&$initialized): Psr18JudgeClient {
-                $initialized++;
-
-                return new Psr18JudgeClient(
-                    new FakeClient(FakeClient::json(FakeClient::openAiReply('{"score":0.9,"reason":"live"}'))),
-                    JudgeSettings::resolve(),
-                );
-            });
-        };
-
-        $first = (new CachedJudgeClient($vcr(VcrMode::Auto), $lazy(), 'gpt-6-luna'))->judge('s', 'u');
-        self::assertSame(1, $initialized);
+        $recording = new FakeClient(FakeClient::json(FakeClient::openAiReply('{"score":0.9,"reason":"live"}')));
+        $first = (new CachedJudgeClient($vcr(VcrMode::Auto), new Psr18JudgeClient($recording, JudgeSettings::resolve())))->judge(self::rubric());
+        self::assertCount(1, $recording->requests);
         self::assertSame('live', $first->reason);
 
-        $second = (new CachedJudgeClient($vcr(VcrMode::Replay), $lazy(), 'gpt-6-luna'))->judge('s', 'u');
-        self::assertSame(1, $initialized);
+        // An empty FakeClient throws on any request.
+        $second = (new CachedJudgeClient($vcr(VcrMode::Replay), new Psr18JudgeClient(new FakeClient(), JudgeSettings::resolve())))->judge(self::rubric());
         self::assertEquals($first, $second);
     }
 
@@ -252,6 +244,8 @@ final class JudgeTest extends TestCase
     {
         self::assertSame("CONTEXT:\na\n---\nb\n\nOUTPUT:\n<output>\nout\n</output>", JudgePrompts::hallucination(['a', 'b'], 'out'));
         self::assertSame("RUBRIC:\nbe polite\n\nOUTPUT:\n<output>\nout\n</output>", JudgePrompts::rubric('be polite', 'out'));
+        self::assertSame(JudgePrompts::rubric('be polite', 'out'), JudgePrompts::rubric(['be polite'], 'out'), 'one criterion keeps the old prompt and its cached verdicts');
+        self::assertSame("RUBRIC:\nAll of the following must hold:\n- a\n- b\n\nOUTPUT:\n<output>\nout\n</output>", JudgePrompts::rubric(['a', 'b'], 'out'));
     }
 
     public function testRetryDelayHonoursSecondsDatesAndCaps(): void
@@ -271,11 +265,11 @@ final class JudgeTest extends TestCase
             FakeClient::json(FakeClient::openAiReply('{"score": 0.5, "reason": "ok"}')),
         );
 
-        (new Psr18JudgeClient($http, JudgeSettings::resolve()))->judge('SYS', 'USR');
+        (new Psr18JudgeClient($http, JudgeSettings::resolve()))->judge(JudgeRequest::grounding(['ctx'], 'out'));
 
         self::assertCount(2, $http->requests);
         self::assertSame(
-            [['role' => 'system', 'content' => 'SYS'], ['role' => 'user', 'content' => 'USR']],
+            [['role' => 'system', 'content' => JudgePrompts::HALLUCINATION_SYSTEM], ['role' => 'user', 'content' => JudgePrompts::hallucination(['ctx'], 'out')]],
             Payload::get(json_decode((string) $http->requests[1]->getBody(), true), 'messages'),
         );
     }
@@ -335,13 +329,16 @@ final class JudgeTest extends TestCase
     {
         $storage = new CassetteStorage($this->tmp);
         $vcr = static fn(VcrMode $mode): AiVcrClient => new AiVcrClient(new FakeClient(), $storage, $storage->pathFor('j'), 'j', $mode, new AiTraceCollector());
-        $live = new SpyJudge(0.9);
-        (new CachedJudgeClient($vcr(VcrMode::Record), $live, 'model-a'))->judge('system', 'user');
+        $judge = static fn(string $model): Psr18JudgeClient => new Psr18JudgeClient(
+            new FakeClient(FakeClient::json(FakeClient::openAiReply('{"score":0.9}'))),
+            new JudgeSettings('http://judge.test/v1', $model, 'k'),
+        );
+        (new CachedJudgeClient($vcr(VcrMode::Record), $judge('model-a')))->judge(self::rubric('a', 'b'));
 
-        foreach ([['model-b', 'system', 'user'], ['model-a', 'user', 'system']] as [$model, $system, $user]) {
+        foreach ([['model-b', self::rubric('a', 'b')], ['model-a', self::rubric('b', 'a')], ['model-a', JudgeRequest::grounding(['a'], 'b')]] as [$model, $request]) {
             try {
-                (new CachedJudgeClient($vcr(VcrMode::Replay), $live, $model))->judge($system, $user);
-                self::fail("$model / $system / $user should not share the recorded verdict");
+                (new CachedJudgeClient($vcr(VcrMode::Replay), $judge($model)))->judge($request);
+                self::fail("$model / {$request->kind} should not share the recorded verdict");
             } catch (\Axitdev\PhpUnitAiEvals\Vcr\Exception\CassetteMissException) {
                 $this->addToAssertionCount(1);
             }
