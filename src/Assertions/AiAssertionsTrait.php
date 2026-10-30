@@ -543,14 +543,23 @@ trait AiAssertionsTrait
 
     /**
      * Whether the test called expectException() with CassetteMissException or a parent of it. PHPUnit has no public
-     * getter for this, so it is read from TestCase; if that ever moves, the guard stays quiet rather than wrong.
+     * getter, so this reads its private state: `TestCase::$expectedException` up to PHPUnit 12, and
+     * `TestCase::$exceptionExpectation->expectedException` from 13. If neither is found the answer is "no", so the guard
+     * errs towards failing loudly; this repository's CI runs every supported PHPUnit version to catch such a change.
      */
     private function aiExpectsCassetteMiss(): bool
     {
-        try {
-            $expected = (new \ReflectionProperty(\PHPUnit\Framework\TestCase::class, 'expectedException'))->getValue($this);
-        } catch (\ReflectionException) {
-            return true;
+        $read = static function (object $object, string $class, string $property): mixed {
+            try {
+                return (new \ReflectionProperty($class, $property))->getValue($object);
+            } catch (\ReflectionException) {
+                return null;
+            }
+        };
+        $expected = $read($this, \PHPUnit\Framework\TestCase::class, 'expectedException');
+        if ($expected === null) {
+            $expectation = $read($this, \PHPUnit\Framework\TestCase::class, 'exceptionExpectation');
+            $expected = is_object($expectation) ? $read($expectation, $expectation::class, 'expectedException') : null;
         }
 
         return is_string($expected) && is_a(CassetteMissException::class, $expected, true);

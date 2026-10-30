@@ -18,7 +18,6 @@ use GuzzleHttp\Handler\MockHandler;
 use GuzzleHttp\HandlerStack;
 use GuzzleHttp\Psr7\Response;
 use Illuminate\Http\Client\Factory;
-use Illuminate\Http\Client\StrayRequestException;
 use PHPUnit\Framework\Attributes\After;
 use PHPUnit\Framework\Attributes\Before;
 use PHPUnit\Framework\TestCase;
@@ -115,7 +114,9 @@ final class LaravelBridgeTest extends TestCase
         $http = new Factory();
         $this->fakeAiHttp('api.openai.com/*', $http, new FakeClient());
 
-        $this->expectException(StrayRequestException::class);
+        // StrayRequestException (a RuntimeException) arrived in Laravel 11.x; 11.0 throws a plain RuntimeException.
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('https://example.com/');
         $http->get('https://example.com/');
     }
 
