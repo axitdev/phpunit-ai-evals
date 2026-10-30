@@ -91,6 +91,18 @@ self::assertSampled(runs: 5, minPass: 4, testLogic: function (): void {
 });
 ```
 
+### 7. System One Models (Experimental)
+
+[System One models](https://docs.typesafe.ai/introduction) such as TypeSafe's Jev return calibrated, typed decisions instead of text. Calls to them are recorded like any other provider, and their answers can be asserted directly or used as a cheap, fast judge:
+
+```php
+self::assertDecision('department', 'technical', minProbability: 0.8);
+self::assertNoulAtLeast('is_urgent', 0.7);
+
+// AI_EVAL_JUDGE_PROVIDER=system-one: one yes/no question per criterion, scored by the weakest
+self::assertMatchesRubric(['Gives a concrete number of days', 'Stays polite'], $answer);
+```
+
 ---
 
 ## Quick Start

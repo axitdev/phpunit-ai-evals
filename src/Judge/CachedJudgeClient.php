@@ -7,7 +7,7 @@ namespace Axitdev\PhpUnitAiEvals\Judge;
 use Axitdev\PhpUnitAiEvals\Vcr\AiVcrClient;
 
 /**
- * Serves verdicts from the cassette; only touches $live (typically a lazy proxy) on a cache miss.
+ * Serves verdicts of any judge from the cassette, keyed on the judge's cachePayload(); only calls it on a miss.
  *
  * @internal
  */
@@ -16,20 +16,15 @@ final class CachedJudgeClient implements JudgeClientInterface
     public function __construct(
         private readonly AiVcrClient $vcr,
         private readonly JudgeClientInterface $live,
-        private readonly string $model,
     ) {}
 
-    public function judge(string $systemPrompt, string $userPrompt): JudgeVerdict
+    public function judge(JudgeRequest $request): JudgeVerdict
     {
-        return $this->vcr->judgeVerdict(
-            [
-                'model' => $this->model,
-                'messages' => [
-                    ['role' => 'system', 'content' => $systemPrompt],
-                    ['role' => 'user', 'content' => $userPrompt],
-                ],
-            ],
-            fn(): JudgeVerdict => $this->live->judge($systemPrompt, $userPrompt),
-        );
+        return $this->vcr->judgeVerdict($this->live->cachePayload($request), fn(): JudgeVerdict => $this->live->judge($request));
+    }
+
+    public function cachePayload(JudgeRequest $request): array
+    {
+        return $this->live->cachePayload($request);
     }
 }

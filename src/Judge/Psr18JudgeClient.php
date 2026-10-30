@@ -5,12 +5,8 @@ declare(strict_types=1);
 namespace Axitdev\PhpUnitAiEvals\Judge;
 
 use Axitdev\PhpUnitAiEvals\Support\Payload;
-use Http\Discovery\Psr17FactoryDiscovery;
 use JsonException;
 use Psr\Http\Client\ClientInterface;
-use Psr\Http\Message\RequestFactoryInterface;
-use Psr\Http\Message\StreamFactoryInterface;
-use RuntimeException;
 use UnexpectedValueException;
 
 /**
@@ -18,72 +14,40 @@ use UnexpectedValueException;
  */
 final class Psr18JudgeClient implements JudgeClientInterface
 {
-    private readonly RequestFactoryInterface $requestFactory;
-
-    private readonly StreamFactoryInterface $streamFactory;
-
-    private const MAX_ATTEMPTS = 3;
-
-    private const MAX_RETRY_AFTER_SECONDS = 30;
+    private readonly JudgeHttp $http;
 
     public function __construct(
-        private readonly ClientInterface $http,
+        ClientInterface $http,
         private readonly JudgeSettings $settings,
     ) {
-        $this->requestFactory = Psr17FactoryDiscovery::findRequestFactory();
-        $this->streamFactory = Psr17FactoryDiscovery::findStreamFactory();
+        $this->http = new JudgeHttp($http);
     }
 
     /**
-     * Retry-After is either seconds or an HTTP date; without it, back off 1s, then 2s.
-     *
-     * @internal public for tests only
+     * Model and messages only: the hash a verdict was saved under before other judges existed, so old cassettes match.
      */
-    public static function retryDelay(string $retryAfter, int $attempt): int
+    public function cachePayload(JudgeRequest $request): array
     {
-        $at = is_numeric($retryAfter) ? null : strtotime($retryAfter);
-        $seconds = match (true) {
-            is_numeric($retryAfter) => (int) $retryAfter,
-            $at !== null && $at !== false => $at - time(),
-            default => $attempt,
-        };
+        [$system, $user] = JudgePrompts::forRequest($request);
 
-        return max(0, min($seconds, self::MAX_RETRY_AFTER_SECONDS));
+        return [
+            'model' => $this->settings->model,
+            'messages' => [
+                ['role' => 'system', 'content' => $system],
+                ['role' => 'user', 'content' => $user],
+            ],
+        ];
     }
 
-    public function judge(string $systemPrompt, string $userPrompt): JudgeVerdict
+    public function judge(JudgeRequest $request): JudgeVerdict
     {
-        $request = $this->requestFactory->createRequest('POST', rtrim($this->settings->baseUri, '/') . '/chat/completions')
-            ->withHeader('Content-Type', 'application/json')
-            ->withHeader('Accept', 'application/json')
-            ->withHeader('Authorization', 'Bearer ' . $this->settings->apiKey)
-            ->withBody($this->streamFactory->createStream(json_encode(
-                [
-                    'model' => $this->settings->model,
-                    'messages' => [
-                        ['role' => 'system', 'content' => $systemPrompt],
-                        ['role' => 'user', 'content' => $userPrompt],
-                    ],
-                ]
-                + ($this->settings->temperature !== null ? ['temperature' => $this->settings->temperature] : [])
-                + ($this->settings->jsonMode ? ['response_format' => ['type' => 'json_object']] : []),
-                JSON_THROW_ON_ERROR,
-            )));
-
-        for ($attempt = 1; ; $attempt++) {
-            $response = $this->http->sendRequest($request);
-            $status = $response->getStatusCode();
-            if (($status === 429 || $status >= 500) && $attempt < self::MAX_ATTEMPTS) {
-                sleep(self::retryDelay($response->getHeaderLine('Retry-After'), $attempt));
-                continue;
-            }
-            break;
-        }
-
-        $body = (string) $response->getBody();
-        if ($status < 200 || $status >= 300) {
-            throw new RuntimeException(sprintf('Judge request failed with HTTP %d: %s', $status, mb_substr($body, 0, 300)));
-        }
+        $body = $this->http->postJson(
+            rtrim($this->settings->baseUri, '/') . '/chat/completions',
+            $this->settings->apiKey,
+            $this->cachePayload($request)
+            + ($this->settings->temperature !== null ? ['temperature' => $this->settings->temperature] : [])
+            + ($this->settings->jsonMode ? ['response_format' => ['type' => 'json_object']] : []),
+        );
 
         $answer = Payload::string(Payload::get(json_decode($body, true), 'choices', 0, 'message', 'content'));
         $data = self::extractJson($answer);

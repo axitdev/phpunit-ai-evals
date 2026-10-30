@@ -15,23 +15,34 @@ final readonly class JudgeSettings
         public string $apiKey,
         public ?float $temperature = null,
         public bool $jsonMode = true,
+        public JudgeProvider $provider = JudgeProvider::OpenAiCompatible,
     ) {}
 
     /**
-     * Order: #[AiJudgeConfig] attribute, then AI_EVAL_JUDGE_* environment, then defaults.
-     * OPENAI_API_KEY is only a fallback for api.openai.com, so it is never sent to another host.
+     * Order: #[AiJudgeConfig] attribute, then AI_EVAL_JUDGE_* environment, then the provider's defaults.
+     *
+     * AI_EVAL_JUDGE_BASE_URI, AI_EVAL_JUDGE_MODEL and AI_EVAL_JUDGE_API_KEY describe the environment's judge, so they
+     * only apply while the attribute keeps that judge's provider: a test that switches provider must not send another
+     * vendor's key to it. A vendor key (OPENAI_API_KEY, TYPESAFE_API_KEY) is only a fallback for that vendor's host.
      */
     public static function resolve(?AiJudgeConfig $attribute = null): self
     {
-        $baseUri = $attribute->baseUri ?? self::env('AI_EVAL_JUDGE_BASE_URI') ?? 'https://api.openai.com/v1';
-        $isOpenAi = strtolower((string) parse_url($baseUri, PHP_URL_HOST)) === 'api.openai.com';
+        $envProviderName = self::env('AI_EVAL_JUDGE_PROVIDER');
+        $envProvider = $envProviderName === null ? JudgeProvider::OpenAiCompatible : JudgeProvider::fromName($envProviderName);
+        $provider = $attribute?->provider === null ? $envProvider : JudgeProvider::fromName($attribute->provider);
+        $env = static fn(string $name): ?string => $provider === $envProvider ? self::env($name) : null;
+
+        $baseUri = $attribute->baseUri ?? $env('AI_EVAL_JUDGE_BASE_URI') ?? $provider->defaultBaseUri();
+        [$vendorHost, $vendorKey] = $provider->vendorKey();
+        $isVendor = strtolower((string) parse_url($baseUri, PHP_URL_HOST)) === $vendorHost;
 
         return new self(
             $baseUri,
-            $attribute->model ?? self::env('AI_EVAL_JUDGE_MODEL') ?? 'gpt-6-luna',
-            self::env('AI_EVAL_JUDGE_API_KEY') ?? ($isOpenAi ? self::env('OPENAI_API_KEY') : null) ?? '',
+            $attribute->model ?? $env('AI_EVAL_JUDGE_MODEL') ?? $provider->defaultModel(),
+            $env('AI_EVAL_JUDGE_API_KEY') ?? ($isVendor ? self::env($vendorKey) : null) ?? '',
             $attribute->temperature ?? self::envFloat('AI_EVAL_JUDGE_TEMPERATURE'),
             $attribute->jsonMode ?? self::envBool('AI_EVAL_JUDGE_JSON_MODE') ?? true,
+            $provider,
         );
     }
 

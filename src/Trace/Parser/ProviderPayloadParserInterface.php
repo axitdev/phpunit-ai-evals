@@ -18,7 +18,7 @@ interface ProviderPayloadParserInterface
     /**
      * Returns the decoded request body plus whatever the provider carries in the URL instead (such as the model or
      * streaming), so that it becomes part of the semantic hash. Most providers return $payload unchanged.
-     * A result without a `model` key or a prompt (`messages`, `contents`, `input` or `prompt`) is recorded as raw HTTP.
+     * A result without a `model` key or a prompt (`messages`, `contents`, `input`, `prompt` or `state`) is recorded as raw HTTP.
      *
      * @param array<mixed> $payload
      * @return array<mixed>

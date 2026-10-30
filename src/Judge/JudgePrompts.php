@@ -24,6 +24,16 @@ final class JudgePrompts
         TXT . "\n" . self::UNTRUSTED . "\n" . self::RESPONSE;
 
     /**
+     * @return array{string, string} system prompt, user prompt
+     */
+    public static function forRequest(JudgeRequest $request): array
+    {
+        return $request->kind === JudgeRequest::GROUNDING
+            ? [self::HALLUCINATION_SYSTEM, self::hallucination($request->context, $request->output)]
+            : [self::RUBRIC_SYSTEM, self::rubric($request->criteria, $request->output)];
+    }
+
+    /**
      * @param list<string> $context
      */
     public static function hallucination(array $context, string $output): string
@@ -31,9 +41,16 @@ final class JudgePrompts
         return "CONTEXT:\n" . implode("\n---\n", $context) . "\n\n" . self::output($output);
     }
 
-    public static function rubric(string $rubric, string $output): string
+    /**
+     * One criterion is written as is, so its prompt (and cached verdict) is the same as before criteria lists existed.
+     *
+     * @param list<string> $criteria never empty: JudgeRequest::rubric() rejects that
+     */
+    public static function rubric(array $criteria, string $output): string
     {
-        return "RUBRIC:\n" . $rubric . "\n\n" . self::output($output);
+        $text = count($criteria) === 1 ? $criteria[0] : "All of the following must hold:\n- " . implode("\n- ", $criteria);
+
+        return "RUBRIC:\n" . $text . "\n\n" . self::output($output);
     }
 
     /**

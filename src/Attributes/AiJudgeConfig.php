@@ -16,5 +16,7 @@ final readonly class AiJudgeConfig
         public ?float $temperature = null,
         /** Send `response_format: json_object`; turn off for endpoints that reject it. Null: AI_EVAL_JUDGE_JSON_MODE, then on. */
         public ?bool $jsonMode = null,
+        /** `openai` (any OpenAI-compatible endpoint) or `system-one` (TypeSafe Jev). Null: AI_EVAL_JUDGE_PROVIDER, then `openai`. */
+        public ?string $provider = null,
     ) {}
 }

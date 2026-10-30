@@ -57,15 +57,18 @@ Both attributes work on a method or a class. Each setting on the method wins ove
 
 ## The judge
 
-The judge talks the OpenAI Chat Completions protocol, through the HTTP client you passed to `wrapHttpClient()`. Settings come from `#[AiJudgeConfig]` first, then the environment, then the defaults:
+By default the judge talks the OpenAI Chat Completions protocol, through the HTTP client you passed to `wrapHttpClient()`. Settings come from `#[AiJudgeConfig]` first, then the environment, then the defaults:
 
 | Setting | Environment variable | Default |
 |---|---|---|
+| Provider (`openai` or `system-one`) | `AI_EVAL_JUDGE_PROVIDER` | `openai` |
 | Base URI | `AI_EVAL_JUDGE_BASE_URI` | `https://api.openai.com/v1` |
 | Model | `AI_EVAL_JUDGE_MODEL` | `gpt-6-luna` |
 | API key | `AI_EVAL_JUDGE_API_KEY`, then `OPENAI_API_KEY` (only when the base URI is `api.openai.com`) | none |
 | JSON mode (`response_format: json_object`) | `AI_EVAL_JUDGE_JSON_MODE` (`0`, `false`, `off` or `no` turns it off) | on |
 | Temperature | `AI_EVAL_JUDGE_TEMPERATURE` | not sent |
+
+`AI_EVAL_JUDGE_BASE_URI`, `AI_EVAL_JUDGE_MODEL` and `AI_EVAL_JUDGE_API_KEY` belong to the provider set in the environment. A test whose `#[AiJudgeConfig(provider: ...)]` picks another provider gets that provider's defaults instead, so one vendor's key is never sent to another.
 
 Temperature isn't sent unless you set it, because current models reject it: Claude 5 refuses it outright, and the gpt-6 models only accept their default. Replays are deterministic either way, since verdicts are saved. Re-recorded verdicts aren't, so for models that accept a temperature, such as local ones, set it to `0` to have a re-record grade the same answer the same way.
 
@@ -82,13 +85,31 @@ Any OpenAI-compatible endpoint works. These were checked against the live APIs:
 
 The judge's answer is parsed leniently, so turning JSON mode off is safe: the verdict is the last JSON object with a `score`, wherever it sits among markdown fences, notes or a reasoning model's `<think>` block. A temperature or JSON mode value that can't be read stops the run with an error instead of being ignored. `#[AiJudgeConfig(jsonMode: false)]` does the same for one test or class.
 
-To use a judge of your own, call `$this->useJudgeClient($judge)` with any `JudgeClientInterface`. Its verdicts aren't saved to the cassette.
+To use a judge of your own, call `$this->useJudgeClient($judge)` with any `JudgeClientInterface`. It gets a `JudgeRequest` (a rubric's criteria, or the context for grounding, plus the output) and returns a `JudgeVerdict`. Its `cachePayload()` says what identifies a request, normally what it would send including the model name; verdicts are saved under it, so a replay doesn't call your judge. Pass `cache: false` to call it every time.
+
+### A System One judge
+
+`AI_EVAL_JUDGE_PROVIDER=system-one` (or `#[AiJudgeConfig(provider: 'system-one')]`) grades with a [System One model](https://docs.typesafe.ai/introduction), TypeSafe's Jev by default, at `https://api.typesafe.ai/v1/systemone`. The key comes from `AI_EVAL_JUDGE_API_KEY`, then `TYPESAFE_API_KEY` (only when the base URI is `api.typesafe.ai`). The model defaults to `jev-latest`; JSON mode and temperature don't apply.
+
+A System One model answers small yes/no questions with a probability instead of writing a grade, so each assertion becomes one request with several questions:
+
+- `assertMatchesRubric()` asks one question per criterion: does the output satisfy it?
+- `assertNoHallucination()` splits the output into sentences and asks, for each, whether the context supports it.
+
+The score is the lowest probability, so every criterion or sentence must pass the threshold. The model gives no explanation, so the reason lists the weakest answers and the release that gave them, such as `"Stays polite" 0.31; "Gives a number of days" 0.97 [jev-1.13.0]`.
+
+Things to know:
+
+- Give one criterion per thing you check. "Concrete and polite" in one criterion is judged as one question and means less; `['Concrete', 'Polite']` is two.
+- Pin a release (`AI_EVAL_JUDGE_MODEL=jev-1.13.0`) if you need re-recorded verdicts to stay comparable: probabilities can change between releases.
+- The probabilities are calibrated, not a 0-10 grade turned into 0-1, so thresholds behave differently than with an LLM judge. Start around 0.7 and adjust on your own examples.
+- Hallucination checks go sentence by sentence; a claim that needs several sentences together to be wrong can slip through. For those, keep the LLM judge.
 
 Saved verdicts need no API key.
 
 ## Custom providers
 
-Requests are matched to a provider by their URL. Traffic that matches none is still recorded and replayed (as `raw_http`), just without token counts or tool calls.
+Requests are matched to a provider by their URL. System One calls (`/v1/systemone`) are built in: their answers are traced as [decisions](assertions.md#what-a-system-one-model-decided). Traffic that matches none is still recorded and replayed (as `raw_http`), just without token counts or tool calls.
 
 To trace another provider, implement `ProviderPayloadParserInterface` and override `aiPayloadParsers()` in your test case or a shared base class:
 
@@ -101,7 +122,7 @@ protected function aiPayloadParsers(): array
 
 If the provider streams in its own format, implement `StreamingPayloadParserInterface` instead: its `mergeStream()` turns the recorded chunks into the response shape `parse()` reads, and `renderStream()` turns them back into the wire format your code receives on replay. Without it, a stream is traced from its last chunk and replayed as standard SSE.
 
-The first parser whose `supports()` accepts the URL is used. Its `requestPayload()` usually returns the payload unchanged; if the provider puts something in the URL instead of the body, such as the model, add it there so it becomes part of the comparison. The result must contain a `model` key and a prompt (`messages`, `contents`, `input` or `prompt`); requests without them are recorded as plain `raw_http` traffic, which keeps your app's own endpoints such as `/api/chat` from being mistaken for an LLM.
+The first parser whose `supports()` accepts the URL is used. Its `requestPayload()` usually returns the payload unchanged; if the provider puts something in the URL instead of the body, such as the model, add it there so it becomes part of the comparison. The result must contain a `model` key and a prompt (`messages`, `contents`, `input`, `prompt` or `state`); requests without them are recorded as plain `raw_http` traffic, which keeps your app's own endpoints such as `/api/chat` from being mistaken for an LLM.
 
 ## Eval report and baseline
 

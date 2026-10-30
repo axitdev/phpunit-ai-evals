@@ -18,6 +18,8 @@ final class PromptNormalizer
         'stream', 'instructions', 'previous_response_id', 'text',
         // Reasoning and structured-output settings change what comes back (Anthropic, OpenAI, Ollama).
         'thinking', 'reasoning', 'reasoning_effort', 'output_config', 'output_format', 'think',
+        // System One models (TypeSafe Jev): the state to evaluate and the typed questions about it.
+        'state', 'questions',
     ];
 
     /** Gemini mixes sampling settings into generationConfig; only these change what comes back. */
@@ -65,6 +67,21 @@ final class PromptNormalizer
         }
 
         $result = $this->canonicalize($semantic);
+        assert(is_array($result));
+
+        /** @var array<string, mixed> $result */
+        return $result;
+    }
+
+    /**
+     * A judge's cache payload is built by the judge itself, so every key counts; only the volatile values go.
+     *
+     * @param array<mixed> $payload
+     * @return array<string, mixed>
+     */
+    public function normalizeJudge(array $payload): array
+    {
+        $result = $this->canonicalize($payload);
         assert(is_array($result));
 
         /** @var array<string, mixed> $result */

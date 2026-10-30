@@ -6,7 +6,7 @@ You don't need any of this to use the library. It's here for when a recording do
 
 Before a request is looked up, it's reduced to the parts that decide what you asked, and those are hashed. Two requests that ask the same thing get the same hash even if they differ in key order, timestamps or sampling settings.
 
-`PromptNormalizer` keeps only these fields: `model`, `messages` / `contents` / `system` / `input` / `prompt`, `tools`, `tool_choice`, `response_format`, `stream` (where `false` counts as absent), the Responses API's `instructions`, `previous_response_id` and `text`, and the Gemini and Ollama equivalents. Settings that change what comes back are kept too: reasoning (`thinking`, `reasoning`, `reasoning_effort`, Ollama's `think`), Anthropic's `output_config` / `output_format`, and from Gemini's `generationConfig` only `responseMimeType`, `responseSchema`, `responseJsonSchema`, `responseModalities` and `thinkingConfig`. Everything else, such as `temperature`, `max_tokens` or `seed`, is ignored, so changing it replays the old recording. Then it:
+`PromptNormalizer` keeps only these fields: `model`, `messages` / `contents` / `system` / `input` / `prompt`, System One's `state` and `questions`, `tools`, `tool_choice`, `response_format`, `stream` (where `false` counts as absent), the Responses API's `instructions`, `previous_response_id` and `text`, and the Gemini and Ollama equivalents. Settings that change what comes back are kept too: reasoning (`thinking`, `reasoning`, `reasoning_effort`, Ollama's `think`), Anthropic's `output_config` / `output_format`, and from Gemini's `generationConfig` only `responseMimeType`, `responseSchema`, `responseJsonSchema`, `responseModalities` and `thinkingConfig`. Everything else, such as `temperature`, `max_tokens` or `seed`, is ignored, so changing it replays the old recording. Then it:
 
 - sorts keys at every level, and re-encodes the JSON strings in `tool_calls[].function.arguments` with sorted keys
 - replaces ISO-8601 dates and timestamps with `<TIMESTAMP>`, UUIDs with `<UUID>`, `data:...;base64,` blobs with `<BASE64_SHA256:...>`, and matches of your `ignorePatterns` with `<IGNORED>`. A date inside a longer token, such as the phone number `555-1234-56-78`, is left alone
@@ -74,13 +74,14 @@ LLM request and response bodies aren't scrubbed beyond the steps above, so keep 
 | OpenAI Responses | `/responses` | yes | yes | SSE | Live API, `gpt-6-luna`, 2026-10-22 |
 | Claude on Google Vertex AI | `…/publishers/anthropic/models/…:rawPredict`, `:streamRawPredict` | yes | yes | SSE | Not yet; built from the documented formats |
 | Amazon Bedrock Converse | `/model/…/converse`, `/converse-stream` | yes | yes | AWS binary event stream | Not yet; built from the documented formats |
+| System One (TypeSafe Jev) | `/v1/systemone` | typed answers ([decisions](assertions.md#what-a-system-one-model-decided)) | no | no | Not yet; built from the documented formats (`jev-1.13.0`) |
 
 Embeddings and other endpoints that aren't listed are recorded and replayed as `raw_http`, without token counts.
 
 "Checked against" means a real request was recorded, its tokens, text and tool calls were read correctly, and replaying it gave the same result. You can run the same check with your own keys:
 
 ```bash
-ANTHROPIC_API_KEY=… GEMINI_API_KEY=… OPENAI_API_KEY=… vendor/bin/phpunit tests/Live
+ANTHROPIC_API_KEY=… GEMINI_API_KEY=… OPENAI_API_KEY=… TYPESAFE_API_KEY=… vendor/bin/phpunit tests/Live
 ```
 
 Providers without a key are skipped. The suite sends about 25 short requests to the models in the table, and also tries Claude, Gemini and OpenAI as [judges](configuration.md#the-judge).
@@ -100,9 +101,9 @@ Token counts and tool calls are rebuilt from the chunks. OpenAI Chat Completions
 
 ## Judge caching
 
-The judge looks for a saved verdict first. The real judge client is created lazily (a PHP 8.4 lazy proxy), so it's only built when a verdict is missing and a live call is needed.
+The judge looks for a saved verdict first and only sends a request when it's missing. Any judge is cached the same way, the built-in ones and your own, under the judge's `cachePayload()`: what it would send, including the model.
 
-A verdict is saved only when the judge answers with a `score` between 0 and 1. An answer without one, or on another scale such as `{"score": 7}`, fails the assertion with an error and nothing is saved, so a misbehaving judge can't pass a test. Verdicts are keyed on the judge model and the prompts; like `temperature` for agent calls, changing the judge's base URI, temperature or JSON mode reuses saved verdicts until you re-record.
+A verdict is saved only when the judge answers with a `score` between 0 and 1 (for a System One judge: a probability for every question it asked). An answer without one, or on another scale such as `{"score": 7}`, fails the assertion with an error and nothing is saved, so a misbehaving judge can't pass a test. Verdicts are keyed on the judge model and the prompts (for a System One judge, the state and questions); like `temperature` for agent calls, changing the judge's base URI, temperature or JSON mode reuses saved verdicts until you re-record.
 
 ## The PHPUnit extension
 

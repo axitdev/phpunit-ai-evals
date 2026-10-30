@@ -4,9 +4,11 @@ declare(strict_types=1);
 
 namespace Axitdev\PhpUnitAiEvals\Tests\Live;
 
-use Axitdev\PhpUnitAiEvals\Judge\JudgePrompts;
+use Axitdev\PhpUnitAiEvals\Judge\JudgeProvider;
+use Axitdev\PhpUnitAiEvals\Judge\JudgeRequest;
 use Axitdev\PhpUnitAiEvals\Judge\JudgeSettings;
 use Axitdev\PhpUnitAiEvals\Judge\Psr18JudgeClient;
+use Axitdev\PhpUnitAiEvals\Judge\SystemOneJudgeClient;
 use Axitdev\PhpUnitAiEvals\Support\Payload;
 use Axitdev\PhpUnitAiEvals\Tests\Support\FakeClient;
 use Axitdev\PhpUnitAiEvals\Tests\Support\TempDirTrait;
@@ -96,8 +98,8 @@ final class LiveProvidersTest extends TestCase
     {
         $judge = new Psr18JudgeClient(new Psr18Client(), new JudgeSettings($baseUri, $model, self::key($provider), jsonMode: $jsonMode));
 
-        $good = $judge->judge(JudgePrompts::RUBRIC_SYSTEM, JudgePrompts::rubric('Confirms the refund politely', 'Thank you for your patience, your refund has been issued.'));
-        $bad = $judge->judge(JudgePrompts::RUBRIC_SYSTEM, JudgePrompts::rubric('Confirms the refund politely', 'No.'));
+        $good = $judge->judge(JudgeRequest::rubric('Confirms the refund politely', 'Thank you for your patience, your refund has been issued.'));
+        $bad = $judge->judge(JudgeRequest::rubric('Confirms the refund politely', 'No.'));
 
         // Judges differ in strictness, so only the ordering is checked, not an absolute score.
         self::assertGreaterThan($bad->score, $good->score, "good: {$good->reason}\nbad: {$bad->reason}");
@@ -134,9 +136,46 @@ final class LiveProvidersTest extends TestCase
         return [$body, $collector->last() ?? self::fail("No trace. Response body:\n" . substr($body, 0, 2000))];
     }
 
+    public function testSystemOneJudgeRanksAGoodAnswerAboveABadOne(): void
+    {
+        $judge = new SystemOneJudgeClient(new Psr18Client(), new JudgeSettings('https://api.typesafe.ai/v1', 'jev-latest', self::key('typesafe'), provider: JudgeProvider::SystemOne));
+
+        $rubric = ['Confirms that the refund was issued', 'Is polite'];
+        $good = $judge->judge(JudgeRequest::rubric($rubric, 'Thank you for your patience, your refund has been issued.'));
+        $bad = $judge->judge(JudgeRequest::rubric($rubric, 'No.'));
+        self::assertGreaterThan($bad->score, $good->score, "good: {$good->reason}\nbad: {$bad->reason}");
+        self::assertStringContainsString('[jev-', $good->reason, 'the reason names the release that answered');
+
+        $context = ['Refunds are issued within 5 business days.'];
+        $grounded = $judge->judge(JudgeRequest::grounding($context, 'Your refund will arrive within 5 business days.'));
+        $invented = $judge->judge(JudgeRequest::grounding($context, 'Your refund will arrive within 5 business days. You also get a 20% coupon.'));
+        self::assertGreaterThan($invented->score, $grounded->score, "grounded: {$grounded->reason}\ninvented: {$invented->reason}");
+    }
+
+    public function testSystemOneDecisionsAreTracedAndReplayed(): void
+    {
+        $request = self::json('https://api.typesafe.ai/v1/systemone', ['Authorization' => 'Bearer ' . self::key('typesafe')], [
+            'model' => 'jev-latest',
+            'state' => 'Our API returns 500 on every request since 20 minutes ago and we cannot process orders.',
+            'questions' => [
+                'department' => ['type' => 'choice', 'instructions' => 'Which team should handle this', 'criteria' => ['billing' => 'Payment issues', 'technical' => 'Bugs or integration problems']],
+                'is_urgent' => ['type' => 'noul', 'instructions' => 'The message conveys urgency'],
+            ],
+        ]);
+
+        [, $live] = $this->send(new Psr18Client(), VcrMode::Record, $request);
+        [, $replayed] = $this->send(new FakeClient(), VcrMode::Replay, $request);
+
+        self::assertSame('system-one', $live->provider);
+        self::assertSame('technical', $live->decisions['department']->value);
+        self::assertGreaterThan(0.5, $live->decisions['is_urgent']->value);
+        self::assertEquals($live->decisions, $replayed->decisions);
+        self::assertGreaterThan(0, $live->promptTokens);
+    }
+
     private static function key(string $provider): string
     {
-        $var = ['anthropic' => 'ANTHROPIC_API_KEY', 'gemini' => 'GEMINI_API_KEY', 'openai' => 'OPENAI_API_KEY', 'openai-responses' => 'OPENAI_API_KEY'][$provider];
+        $var = ['anthropic' => 'ANTHROPIC_API_KEY', 'gemini' => 'GEMINI_API_KEY', 'openai' => 'OPENAI_API_KEY', 'openai-responses' => 'OPENAI_API_KEY', 'typesafe' => 'TYPESAFE_API_KEY'][$provider];
         $key = getenv($var);
         if (!is_string($key) || $key === '') {
             self::markTestSkipped("$var is not set.");
